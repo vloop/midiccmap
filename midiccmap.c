@@ -91,9 +91,14 @@ int verbose=0;
 #define map_size (128)
 enum MapType {NONE, NRPN, RPN, CC, PB}; // What about LSB/MSB?
 const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"};
+// CC mapping
 enum MapType mapType[map_size];
 unsigned char mapLSB[map_size];
 unsigned char mapMSB[map_size];
+// After-touch mapping
+enum MapType atType;
+unsigned char atLSB;
+unsigned char atMSB;
 
 // function declarations:
 void errormessage(const char *format, ...);
@@ -214,17 +219,19 @@ int dump(const unsigned char *buffer, const int count) {
 
 int main(int argc, char *argv[]) {
 	int status; // status returned by open, write and read
-	unsigned char running_status; // Current MIDI status
-	unsigned char ccnum, ccval, channel; // MIDI controller number and value
+	unsigned char runningStatus; // Current MIDI status
+	unsigned char ccNum, ccVal, channel; // MIDI controller number and value
+	unsigned char atVal; // After-touch value
 	unsigned int pbval; // Pitch bend value
 	int scale; // FIXME Scaling currently for pitch bend only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
-	enum read_states {PASSTHRU, PROCESS_CC, PROCESS_PARM, PROCESS_VAL, PROCESS_PB} read_state;
+	enum readStates {PASSTHRU, PROCESS_CC, PROCESS_PARM, PROCESS_VAL, PROCESS_PB, PROCESS_AT} readState;
 	snd_rawmidi_t* midiin = NULL;
 	snd_rawmidi_t* midiout = NULL;
 
 	init_maps();
+	atType=NONE;
 	
 	int i=1;
 	int need_map = 0;
@@ -397,7 +404,8 @@ int main(int argc, char *argv[]) {
 	int total_count = 0;
 	// int data_count; // Number of data bytes following MIDI status byte
 	char buffer[buf_size];        // Storage for input buffer received
-	unsigned char msgCtrl[buf_size]; // cc 99, 98, 6, optionally 38, + reset rpn 
+	unsigned char msgCtrl[buf_size]; // cc 99, 98, 6, optionally 38, + reset rpn
+	int k; // Index in msgCtrl
 	// printf("\nEAGAIN: %d %s %s", EAGAIN, snd_strerror(-EAGAIN), snd_strerror(EAGAIN));
 	// -> EAGAIN=11 Resource temporarily unavailable
 	// fflush(stdout);
@@ -409,7 +417,7 @@ int main(int argc, char *argv[]) {
 	// for(int i=0; i<count; i++){
 	//	   printf("%u ", (unsigned char)buffer[i]);
 	// };
-	read_state = PASSTHRU;
+	readState = PASSTHRU;
 
 	while (total_count<max_count || max_count<1) {
 		/* Blocking version - don't use
@@ -444,19 +452,30 @@ int main(int argc, char *argv[]) {
 		for(int i=0; i<count; i++){
 			if (buffer[i] & 0x80){ // Status byte, 80..FF
 		        if(verbose>1) printf("S");
-				running_status=buffer[i];
-				channel = running_status & 0x0F;
-				// data_count=data_length[(running_status & 0x70)>>4];
-				read_state = ((running_status & 0xF0) == 0xB0) ? PROCESS_CC : PASSTHRU;
+				runningStatus=buffer[i];
+				channel = runningStatus & 0x0F;
+				// data_count=data_length[(runningStatus & 0x70)>>4];
+				// readState = ((runningStatus & 0xF0) == 0xB0) ? PROCESS_CC : PASSTHRU;
+				switch(runningStatus & 0xF0) {
+					case 0xB0:
+						readState = PROCESS_CC;
+						break;
+					case 0xD0:
+						readState = PROCESS_AT;
+						break;
+					default:
+						readState = PASSTHRU;
+				}
 			}else{ // Data byte, 00..7F
-		        if(verbose>1) printf("D");
-				if (read_state == PROCESS_CC){ // Got a cc number
+		        if (verbose>1) printf("D");
+		        switch (readState){
+				case PROCESS_CC: // if (readState == PROCESS_CC){ // Got a cc number
 					// Next state depends on map type
 					if(verbose>1) printf("1");
-					ccnum=buffer[i];
-					if(mapType[ccnum] == NONE){ // No mapping
+					ccNum=buffer[i];
+					if(mapType[ccNum] == NONE){ // No mapping
 						// catch up with status
-						if ((status = snd_rawmidi_write(midiout, &running_status, 1)) < 0) {
+						if ((status = snd_rawmidi_write(midiout, &runningStatus, 1)) < 0) {
 							errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
 							break;
 						};
@@ -466,34 +485,35 @@ int main(int argc, char *argv[]) {
 							break;
 						};
 						if(verbose>1) printf("s");
-						read_state = PROCESS_VAL;
-					}else if(mapType[ccnum] == NRPN || mapType[ccnum] == RPN){
-						read_state = PROCESS_PARM;
+						readState = PROCESS_VAL;
+					}else if(mapType[ccNum] == NRPN || mapType[ccNum] == RPN){
+						readState = PROCESS_PARM;
 						// Do nothing until value is received
-					}else if(mapType[ccnum] == CC){
+					}else if(mapType[ccNum] == CC){
 						// Catch up with status
-						if ((status = snd_rawmidi_write(midiout, &running_status, 1)) < 0) {
+						if ((status = snd_rawmidi_write(midiout, &runningStatus, 1)) < 0) {
 							errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
 							break;
 						};
 						if(verbose>1) printf("s");
 						// Send remapped cc
-						if ((status = snd_rawmidi_write(midiout, &mapMSB[ccnum], 1)) < 0) {
+						if ((status = snd_rawmidi_write(midiout, &mapMSB[ccNum], 1)) < 0) {
 							errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
 							break;
 						};
-						if(verbose>1) printf("c 0x%02x ", mapMSB[ccnum]);
-						read_state = PROCESS_VAL; // Will pass next byte (cc value) unchanged
+						if(verbose>1) printf("c 0x%02x ", mapMSB[ccNum]);
+						readState = PROCESS_VAL; // Will pass next byte (cc value) unchanged
 						continue; // Done processing cc number
-					}else if(mapType[ccnum] == PB){
-						read_state = PROCESS_PB;
+					}else if(mapType[ccNum] == PB){
+						readState = PROCESS_PB;
 					}else{
-						errormessage("Internal error - unknown map type %u\n", mapType[ccnum]);
+						errormessage("Internal error - unknown map type %u\n", mapType[ccNum]);
 						exit(-1);
 					}
-				}else if (read_state == PROCESS_PARM){ // RPN/NRPN mapping specific
+					break;
+				case PROCESS_PARM: // }else if (readState == PROCESS_PARM){ // RPN/NRPN mapping specific
 					if(verbose>1) printf("2");
-					ccval=buffer[i];
+					ccVal=buffer[i];
 					/* see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
 					sendmidi dev "Virtual RawMIDI (2)" nrpn 81 3
 					B0 63 00
@@ -503,17 +523,17 @@ int main(int argc, char *argv[]) {
 					   65 7F
 					   64 7F
 					   */
-					int k=0;
+					k=0;
 					msgCtrl[k++]=0xB0+channel;
-					msgCtrl[k++]=(mapType[ccnum] == RPN)?0x65:99; // 0x63 NRPN MSB
-					msgCtrl[k++]=mapMSB[ccnum];
+					msgCtrl[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
+					msgCtrl[k++]=mapMSB[ccNum];
 					// msgCtrl[3]=0xB0+channel; // Unneeded, unchanged running status
-					msgCtrl[k++]=(mapType[ccnum] == RPN)?0x64:98; // 0x62 NRPN LSB
-					msgCtrl[k++]=mapLSB[ccnum];
+					msgCtrl[k++]=(mapType[ccNum] == RPN)?0x64:0x62;
+					msgCtrl[k++]=mapLSB[ccNum];
 					// msgCtrl[6]=0xB0+channel; // Unneeded, unchanged running status
-					msgCtrl[k++]=6; // 0x06
-					msgCtrl[k++]=ccval;
-					msgCtrl[k++]=38; // 0x26
+					msgCtrl[k++]=0x06;
+					msgCtrl[k++]=ccVal;
+					msgCtrl[k++]=0x26;
 					msgCtrl[k++]=0;
 					// The following prevent accidental change of NRPN value
 					msgCtrl[k++]=0x65; // RPN MSB
@@ -524,35 +544,102 @@ int main(int argc, char *argv[]) {
 					if(verbose>1) printf(" --> ");
 					if ((status = snd_rawmidi_write(midiout, msgCtrl, k)) < 0) {
 						errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
-						break;
+						exit(-1); // break;
 					};
 					if(verbose>1) dump(msgCtrl, k);
 
-					read_state = PROCESS_CC;
-				}else if (read_state == PROCESS_VAL){ // CC mapping specific, send value
+					readState = PROCESS_CC;
+					break;
+				case PROCESS_VAL: // }else if (readState == PROCESS_VAL){
+				    // CC mapping specific, send value
 					// Like passthru except a cc num can follow (running status is 0xB_ )
 					if ((status = snd_rawmidi_write(midiout, &buffer[i], 1)) < 0) {
 						errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
-						break;
+						exit(-1); // break;
 					}
-					read_state = PROCESS_CC;
-				}else if (read_state == PROCESS_PB){ // PB mapping specific, send scaled value
+					readState = PROCESS_CC;
+					break;
+				case PROCESS_PB: // }else if (readState == PROCESS_PB){
+				    // PB mapping specific, send scaled value
 					if(verbose>1) printf("P");
-					ccval=buffer[i];
-					scale=(mapMSB[ccnum]<<7) + mapLSB[ccnum]; // FIXME
-					pbval=8192+(scale*ccval)/127;
-					int k=0;
+					ccVal=buffer[i];
+					scale=(mapMSB[ccNum]<<7) + mapLSB[ccNum]; // FIXME
+					pbval=8192+(scale*ccVal)/127;
+					k=0;
 					msgCtrl[k++]=0xE0+channel;
 					msgCtrl[k++]=pbval & 0x7F;
 					msgCtrl[k++]=pbval >>7;
+					// At this stage output running status is E0
+					// while input running status is B0 (or D0)
+					// We should echo the input running status
+					// after sending then pitch bend
+					// This is not always necessary depending on what follows
+					// Sending it even when unneeded shouldn't harm
+					// Todo: have a pending_status variable to resend only when needed
+					msgCtrl[k++]=runningStatus;
 					if ((status = snd_rawmidi_write(midiout, msgCtrl, k)) < 0) {
 						errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
-						break;
+						exit(-1); // break;
 					}
-					read_state = PROCESS_CC;
-				}
+					readState = PROCESS_CC;
+					break;
+				case PROCESS_AT:
+					if(verbose>1) printf("A");
+					atVal=buffer[i];
+					k=0;
+					switch (atType){
+						case NONE:
+							msgCtrl[k++]=runningStatus;
+							msgCtrl[k++]=atVal;
+							break;
+						case CC:
+						    msgCtrl[k++]=0xB0;
+						    msgCtrl[k++]=atMSB;
+						    msgCtrl[k++]=atVal;
+							break;
+						case RPN:
+						case NRPN:
+							msgCtrl[k++]=0xB0+channel;
+							msgCtrl[k++]=(atType == RPN)?0x65:0x63;
+							msgCtrl[k++]=atMSB;
+							msgCtrl[k++]=(atType == RPN)?0x64:0x62;
+							msgCtrl[k++]=atLSB;
+							msgCtrl[k++]=0x06;
+							msgCtrl[k++]=atVal;
+							msgCtrl[k++]=0x26;
+							msgCtrl[k++]=0;
+							// The following prevent accidental change of NRPN value
+							msgCtrl[k++]=0x65; // RPN MSB
+							msgCtrl[k++]=0x7F;
+							msgCtrl[k++]=0x64; // RPN LSB
+							msgCtrl[k++]=0x7F;
+							break;
+						case PB:
+							scale=(atMSB<<7) + atLSB; // FIXME
+							pbval=8192+(scale*atVal)/127;
+							msgCtrl[k++]=0xE0+channel;
+							msgCtrl[k++]=pbval & 0x7F;
+							msgCtrl[k++]=pbval >>7;
+							break;
+						default:
+							errormessage("Internal error - unknown aftertouch map type %u\n", atType);
+							exit(-1);
+					}
+					// We don't need to resend status
+					// next aftertouch message will always map to the same output status
+					if ((status = snd_rawmidi_write(midiout, msgCtrl, k)) < 0) {
+						errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
+						exit(-1); // break;
+					}
+					readState=PROCESS_AT; // Handle input running status
+					break;
+				default:
+					errormessage("Internal error - unexpected read state %u", readState);
+					exit(-1);
+				
+				} // Switch readState
 			}
-			if (read_state == PASSTHRU){
+			if (readState == PASSTHRU){
 				if ((status = snd_rawmidi_write(midiout, &buffer[i], 1)) < 0) {
 			        errormessage("Problem writing MIDI Output: %s", snd_strerror(status));
 			        break;
