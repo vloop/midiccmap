@@ -9,9 +9,9 @@ cc are 7-bit values, while nrpn, rpn and pb are 14-bit
 
 This means a scaling has to be applied
 
-The output will only have 128 distinct values anyway
+The output can only have 128 distinct values anyway
 
-The output resolution or range has to be sacrified
+The output resolution and/or the range have to be reduced
 
 ## Installation
 
