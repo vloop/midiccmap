@@ -307,10 +307,19 @@ int main(int argc, char *argv[]) {
 									}else if (strcmp(start, sectionNames[4])==0){ currentType = PB;
 									}else printf("Warning: skipping section %s\n", start);
 								}else if (currentType != NONE){ // map data: source destination
-									// Read th cc we are mapping from
-									n1=strtoul(start, &tail, 0);
+									// Special source: aftertouch
+									int atSource;
+									if (strncmp(start, "AT", 2)==0) {
+										atSource=1;
+										start+=2;
+									}else{
+										atSource=0;
+										// Read th cc we are mapping from
+										n1=strtoul(start, &tail, 0);
+										start=tail;
+
+									}
 									// Read the cc/rpn/nrpn we are mapping to (or range for pitch bend)
-									start=tail;
 									while(*start==' ' || *start=='\t') start++;
 									if (*start==',') start++; // optional comma separator
 									n2=strtoul(start, &tail, 0);
@@ -321,9 +330,20 @@ int main(int argc, char *argv[]) {
 										errormessage("Error: invalid destination %s", start);
 										exit(-1);
 									}else{
-										if (set_maps(currentType, n1, n2)){
-											errormessage("Error: invalid mapping, aborting");
-											exit(-1);
+										if(atSource){
+											atType=currentType;
+											atLSB=n2 & 0x7F;
+											atMSB=n2 >> 7;
+											// Should check range depending on type
+											if(verbose)
+												printf("aftertouch to type %u %s %s %u (0x%02x)\n", atType, mapNames[atType],
+													(atType==PB)?"scale":"value", // FIXME shouldn't use map_to as scale
+													n2, n2);
+										}else{
+											if (set_maps(currentType, n1, n2)){
+												errormessage("Error: invalid mapping, aborting");
+												exit(-1);
+											}
 										}
 									}
 								}
@@ -514,15 +534,7 @@ int main(int argc, char *argv[]) {
 				case PROCESS_PARM: // }else if (readState == PROCESS_PARM){ // RPN/NRPN mapping specific
 					if(verbose>1) printf("2");
 					ccVal=buffer[i];
-					/* see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
-					sendmidi dev "Virtual RawMIDI (2)" nrpn 81 3
-					B0 63 00
-					   62 51(p)
-					   06 00
-					   26 03(v)
-					   65 7F
-					   64 7F
-					   */
+					// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
 					k=0;
 					msgCtrl[k++]=0xB0+channel;
 					msgCtrl[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
@@ -560,7 +572,7 @@ int main(int argc, char *argv[]) {
 					readState = PROCESS_CC;
 					break;
 				case PROCESS_PB: // }else if (readState == PROCESS_PB){
-				    // PB mapping specific, send scaled value
+				    // Pitch bend mapping specific, send scaled value
 					if(verbose>1) printf("P");
 					ccVal=buffer[i];
 					scale=(mapMSB[ccNum]<<7) + mapLSB[ccNum]; // FIXME
@@ -586,6 +598,10 @@ int main(int argc, char *argv[]) {
 				case PROCESS_AT:
 					if(verbose>1) printf("A");
 					atVal=buffer[i];
+					// TODO: Factor out
+					// sendParm(midiout, channel, type, parmMSB, parmLSB, parmVal)
+					// sendCc(midiout, channel, cc, value)
+					// sendPb(midiout, channel, value, scale)
 					k=0;
 					switch (atType){
 						case NONE:
@@ -593,7 +609,7 @@ int main(int argc, char *argv[]) {
 							msgCtrl[k++]=atVal;
 							break;
 						case CC:
-						    msgCtrl[k++]=0xB0;
+						    msgCtrl[k++]=0xB0+channel;
 						    msgCtrl[k++]=atMSB;
 						    msgCtrl[k++]=atVal;
 							break;
