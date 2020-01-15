@@ -80,8 +80,8 @@
 #include <stdlib.h> /* for strtoul */
 
 // Setting inBuffer size to 1 resulted in data loss
-// when using virtual midi port
-// We need to expect several bytes in a single read
+// when using virtual midi port.
+// We need to expect several bytes in a single read.
 #define buf_size (1024)
 
 int verbose=0;
@@ -115,13 +115,17 @@ example;
 a.out -v -v 1 2 -r 3 4 -c 5 6 7 8 -n 9 0x0A 0x0B 12
 will set verbose to 2 (print all messages)
 and will send:
-- cc 1 to nrpn 2 (comportement par défaut)
+- cc 1 to nrpn 2 (default behaviour)
 - cc 3 to rpn 4
 - cc 5 to cc 6 and cc 7 to cc 8
 - cc 9 to nrpn 10 and cc 11 to nrpn 12
 - all other midi messages unchanged
 */
 // TODO handle ctl-C
+// TODO look for default config file ~/midiccmap.ini
+// before handling options, because explicit -f will
+// merge and replace map
+// TODO dump merged map (also if -f is given multiple times)
 // TODO maybe Config file ~ TOML ?
 /* Example of TOML-like config (not implemented!)
 nrpn = [
@@ -137,7 +141,7 @@ cc = [
  [7, 8]
 ]
  */
-// for now use case sensitive sections, no brackets on map lines, commas optional
+// for now we use case sensitive sections, no brackets on map lines, commas optional
 // Example: see midiccmap.ini
 
 int usage(const char * command){
@@ -188,6 +192,13 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 	}
 	mapType[cc_from]=m;
 	mapNum[cc_from]=map_to;
+	// Scaling values below are deliberately not checked.
+	// Scaling values outside normal parameter ranges are allowed.
+	// This allows extra sensitivity to low input values,
+	// at the expense of precision.
+	// If scaling results in an out of range output value,
+	// it will be clipped to legal output range.
+	// Should we also allow negative values?
 	mapValFrom[cc_from]=val_from;
 	mapValTo[cc_from]=val_to;
 	if(verbose)
@@ -221,9 +232,14 @@ int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int c
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
 		exit(-1);
 	};
-	if(status){
-		for(int i=0; i<count; i++){
-			if (outBuffer[i] & 0x80) *status=outBuffer[i];
+	if(status){ // Update output status
+		// We know that in this application the status is in outBuffer[0]
+		// but the loop keeps the function more generic
+		for(int i=count-1; i>=0; i--){
+			if (outBuffer[i] & 0x80){
+				*status=outBuffer[i];
+				break;
+			}
 		}
 	}
 	if(verbose>1){
@@ -295,7 +311,7 @@ int readIniFile(const char *filename){
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
 					valFrom=mapFromDefault[currentType];
-					valFrom0=strtoul(start, &tail, 0);
+					valFrom0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valFrom=valFrom0;
 						start=tail;
@@ -303,7 +319,7 @@ int readIniFile(const char *filename){
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
 					valTo=mapToDefault[currentType];
-					valTo0=strtoul(start, &tail, 0);
+					valTo0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valTo=valTo0;
 						start=tail;
@@ -354,10 +370,11 @@ int main(int argc, char *argv[]) {
 	unsigned char newStatusOut; // Future MIDI Status in output stream
 	// Output (running) status can be different from last input status
 	// This occurs when mapping cc to pitch, and when mapping from aftertouch
-	unsigned char ccNum, ccVal, channel; // MIDI controller number and value
+	unsigned char ccNum, channel; // MIDI controller number and value
 	unsigned char atVal; // After-touch value (7 bits)
-	unsigned int pbVal; // Pitch bend value; unsigned offset by 8192, not signed!!
-	unsigned int parmVal; // RPN or NRPN value
+	int pbVal; // Pitch bend value; unsigned offset by 8192, not signed, keep sign for clipping only
+	int parmVal; // RPN or NRPN value, unsigned, keep sign for clipping only
+	int ccVal; // Control change, keep sign for clipping only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
 	enum readStates {PASSTHRU, PROCESS_CC, PROCESS_PARM, PROCESS_VAL, PROCESS_PB, PROCESS_AT} readState;
@@ -368,9 +385,8 @@ int main(int argc, char *argv[]) {
 	atType=NONE;
 	
 	int i=1;
-	int need_map = 0;
+	int need_map=0;
 	int currentType=NRPN;
-	long int parsed;
 	unsigned long n1, n2;
 	char *tail;
 	// Process command-line options
@@ -543,13 +559,14 @@ int main(int argc, char *argv[]) {
 						readState = PROCESS_PARM;
 						// Do nothing until value is received
 					}else if(mapType[ccNum] == CC){
+						k=0;
 						// Catch up with status
-						midiSend(midiout, &runningStatusIn, 1, &runningStatusOut);
+						outBuffer[k++]=runningStatusIn;
 						if(verbose>1) printf("s");
 						
 						// Send remapped cc
-						outBuffer[0]=mapNum[ccNum] & 0x7F;
-						midiSend(midiout, outBuffer, 1, &runningStatusOut);
+						outBuffer[k++]=mapNum[ccNum] & 0x7F;
+						midiSend(midiout, outBuffer, k, &runningStatusOut);
 
 						if(verbose>1) printf("c 0x%02x ", mapNum[ccNum]);
 						readState = PROCESS_VAL; // Next byte will be cc value
@@ -557,7 +574,7 @@ int main(int argc, char *argv[]) {
 					}else if(mapType[ccNum] == PB){
 						readState = PROCESS_PB;
 					}else{
-						errormessage("Internal error - unknown map type %u\n", mapType[ccNum]);
+						errormessage("Internal error - unknown cc map type %u\n", mapType[ccNum]);
 						exit(-1);
 					}
 					break;
@@ -565,6 +582,8 @@ int main(int argc, char *argv[]) {
 					if(verbose>1) printf("2");
 					ccVal=inBuffer[i];
 					parmVal=mapValFrom[ccNum]+ccVal*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					if (parmVal<0) parmVal=0;
+					if (parmVal>16383) parmVal=16383;
 					// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
 					k=0;
 					newStatusOut=0xB0+channel;
@@ -595,15 +614,21 @@ int main(int argc, char *argv[]) {
 					// Like passthru except a cc num could follow (running status is 0xB_ )
 					// Hence next state PROCESS_CC
 					ccVal=mapValFrom[ccNum]+inBuffer[i]*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					if (ccVal<0) ccVal=0;
 					if (ccVal>127) ccVal=127;
-					midiSend(midiout, &ccVal, 1, &runningStatusOut);
+					outBuffer[0]=ccVal;
+					midiSend(midiout, outBuffer, 1, &runningStatusOut);
 					readState = PROCESS_CC;
 					break;
 				case PROCESS_PB:
 				    // Pitch bend mapping specific, send scaled value
+				    // Signed pitched change is represented by an unsigned with offset +8192
+				    // i.e. values below 8192 are interpreted as negative by synths
 					if(verbose>1) printf("P");
 					ccVal=inBuffer[i];
 					pbVal=mapValFrom[ccNum]+ccVal*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					if (pbVal<0) pbVal=0;
+					if (pbVal>16383) pbVal=16383;
 					k=0;
 					newStatusOut=0xE0+channel;
 					if(newStatusOut!=runningStatusOut){
@@ -611,7 +636,7 @@ int main(int argc, char *argv[]) {
 						// runningStatusOut=newStatusOut;
 					}
 					outBuffer[k++]=pbVal & 0x7F;
-					outBuffer[k++]=pbVal >>7;
+					outBuffer[k++]=(pbVal >>7) & 0x7F;
 					// At this stage output running status is E0
 					// while input running status is B0 (or D0)
 					// We should echo the input running status after sending the pitch bend
@@ -639,6 +664,7 @@ int main(int argc, char *argv[]) {
 							break;
 						case CC:
 							ccVal=atValFrom+atVal*(atValTo-atValFrom)/127;
+							if (ccVal<0) ccVal=0;
 							if (ccVal>127) ccVal=127;
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
@@ -650,6 +676,8 @@ int main(int argc, char *argv[]) {
 						case RPN:
 						case NRPN:
 							parmVal=atValFrom+atVal*(atValTo-atValFrom)/127;
+							if (parmVal<0) parmVal=0;
+							if (parmVal>16383) parmVal=16383;
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
@@ -670,6 +698,8 @@ int main(int argc, char *argv[]) {
 							break;
 						case PB:
 							pbVal=atValFrom+ccVal*(atValTo-atValFrom)/127; // ?? 128
+							if (pbVal<0) pbVal=0;
+							if (pbVal>16383) pbVal=16383;
 							newStatusOut=0xE0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
