@@ -88,11 +88,13 @@ int verbose=0;
 
 // We need to map 128 possible MIDI controller numbers
 // What about a per channel map?
+// TODO: use a struct
 #define map_size (128)
 enum MapType {NONE, NRPN, RPN, CC, PB}; // What about LSB/MSB?
 const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"};
 int mapFromDefault[]={0, 0, 0, 0, 8192};
-int mapToDefault[]={127, 16383, 16383, 127, 16383};
+int mapToMax[]={127, 16383, 16383, 127, 16383};
+int mapToDefault[]={127, 16383, 16383, 127, 16383}; // Default to max
 // CC mapping
 enum MapType mapType[map_size];
 // unsigned char mapLSB[map_size];
@@ -164,44 +166,33 @@ int usage(const char * command){
 }
 
 int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to, const long val_from, const long val_to){
+	int maxVal;
 	if (cc_from>=map_size){
 		errormessage("Error: invalid source controller number %u", cc_from);
 		return(-1);
 	}
 	switch (m) {
 		case CC:
-		    if(map_to>127){
-				errormessage("Error: invalid destination controller number %u", map_to);
-				return(-1);
-			}
-			break;
 		case RPN:
 		case NRPN:
-			if(map_to>16383){
+			maxVal=mapToMax[m];
+			if(map_to>maxVal){
 				errormessage("Error: invalid destination parameter number %u", map_to);
 				return(-1);
 			}
 			break;
 		case PB:
-		// map_to is irrelevant for pitch bend, no need to check
+			maxVal=mapToMax[m];
+			// map_to is irrelevant for pitch bend, no need to check
+			break;
 		case NONE:
+			maxVal=0;
 			break;
 		default:
 			errormessage("Error: invalid map type %u", m);
 			return(-1);
 	}
-	mapType[cc_from]=m;
-	mapNum[cc_from]=map_to;
-	// Scaling values below are deliberately not checked.
-	// Scaling values outside normal parameter ranges are allowed.
-	// This allows extra sensitivity to low input values,
-	// at the expense of precision.
-	// If scaling results in an out of range output value,
-	// it will be clipped to legal output range.
-	// Should we also allow negative values?
-	mapValFrom[cc_from]=val_from;
-	mapValTo[cc_from]=val_to;
-	if(verbose)
+	if(verbose){
 	    if (m==PB){
 			printf("cc %u (0x%02x) to type %u %s from %d to %d\n", cc_from, cc_from, m, mapNames[m],
 				val_from, val_to);
@@ -209,6 +200,29 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 			printf("cc %u (0x%02x) to type %u %s number %u (0x%02x) from %d to %d\n", cc_from, cc_from, m, mapNames[m],
 				map_to, map_to, val_from, val_to);
 		}
+	}
+	if(mapType[cc_from]!=NONE){
+		errormessage("Warning: duplicate definition for cc %u", cc_from);
+	}
+	
+	// Scaling values below are deliberately not checked.
+	// Scaling values outside normal parameter ranges are allowed.
+	// This allows extra sensitivity to low input values,
+	// at the expense of precision.
+	// If scaling results in an out of range output value,
+	// it will be clipped to legal output range.
+	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
+		errormessage("Error: unusable output range %d..%d\n", m);
+		return(-1);
+	}
+	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
+		errormessage("Warning: output for cc %u will be clipped", cc_from);
+	}
+	
+	mapType[cc_from]=m;
+	mapNum[cc_from]=map_to;
+	mapValFrom[cc_from]=val_from;
+	mapValTo[cc_from]=val_to;
 	return(0);
 }
 
