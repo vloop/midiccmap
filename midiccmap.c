@@ -212,7 +212,7 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 	// If scaling results in an out of range output value,
 	// it will be clipped to legal output range.
 	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
-		errormessage("Error: unusable output range %d..%d\n", m);
+		errormessage("Error: unusable output range %d .. %d for cc %u\n", val_from, val_to, cc_from);
 		return(-1);
 	}
 	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
