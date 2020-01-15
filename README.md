@@ -1,17 +1,19 @@
 ## Summary
-midiccmap allows to map midi continuous controllers to
-- other cc
+midiccmap allows to map midi continuous controllers and aftertouch to
+- cc
 - nrpn
 - rpn
 - pitch bend
 
-cc are 7-bit values, while nrpn, rpn and pb are 14-bit
+cc are 7-bit values, while nrpn, rpn and pb are 14-bit.
 
-This means a scaling has to be applied
+This means a scaling has to be applied.
 
-The output can only have 128 distinct values anyway
+The output can only have 128 distinct values anyway.
 
-The output resolution and/or the range have to be reduced
+The output resolution and/or the range have to be reduced.
+
+Default scaling maps to full output range.
 
 ## Installation
 
@@ -33,3 +35,13 @@ gcc -o midiccmap midiccmap.c -lasound
 ```
 sudo cp midiccmap /usr/local/bin/
 ```
+- Use
+```
+midiccmap -h
+```
+will print available options.
+
+Mapping can be set on command line or in .ini file,
+
+scaling can only be set in .ini file.
+
