@@ -214,13 +214,16 @@ int dump(const unsigned char *buffer, const int count) {
 	fflush(stdout);
 }
 
-int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count){
+int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count, unsigned char *status){
 	// Should we update runningStatusOut here, or in the calling code?
 	int writeStatus;
 	if ((writeStatus = snd_rawmidi_write(midiout, outBuffer, count)) < 0) {
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
 		exit(-1);
 	};
+	for(int i=0; i<count; i++){
+		if (outBuffer[i] & 0x80) *status=outBuffer[i];
+	}
 	if(verbose>1){
 		printf(" --> ");
 		dump(outBuffer, count);
@@ -575,7 +578,7 @@ int main(int argc, char *argv[]) {
 					newStatusOut=0xB0+channel;
 					if(newStatusOut!=runningStatusOut){
 					    outBuffer[k++]=newStatusOut;
-					    runningStatusOut=newStatusOut;
+					    // runningStatusOut=newStatusOut;
 					}
 					outBuffer[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
 					outBuffer[k++]=(mapNum[ccNum]>>7)&0x7F; // mapMSB[ccNum];
@@ -593,7 +596,7 @@ int main(int argc, char *argv[]) {
 					outBuffer[k++]=0x64; // RPN LSB
 					outBuffer[k++]=0x7F;
 					// Luckily running status is still 0xBcc, no need to resend
-					midiSend(midiout, outBuffer, k);
+					midiSend(midiout, outBuffer, k, &runningStatusOut);
 					readState = PROCESS_CC;
 					break;
 				case PROCESS_VAL:
@@ -623,14 +626,10 @@ int main(int argc, char *argv[]) {
 					outBuffer[k++]=pbVal >>7;
 					// At this stage output running status is E0
 					// while input running status is B0 (or D0)
-					// We should echo the input running status
-					// after sending then pitch bend
-					// This is not always necessary depending on what follows
-					// Sending it even when unneeded shouldn't harm
-					// Todo: have a pending_status variable to resend only when needed
-					// outBuffer[k++]=runningStatusIn;
-					// pendingStatus=1; // FIXME
-					midiSend(midiout, outBuffer, k);
+					// We should echo the input running status after sending the pitch bend
+					// or not depending on what follows in the output stream
+					// This is handled through newStatusOut
+					midiSend(midiout, outBuffer, k, &runningStatusOut);
 					// We came here by processing a cc, more cc data bytes can follow
 					readState = PROCESS_CC;
 					break;
@@ -701,7 +700,7 @@ int main(int argc, char *argv[]) {
 					// We'll never need to resend input status:
 					// - if next input message is aftertouch it will map to the same output status
 					// - if not it will already have an explicit status
-					midiSend(midiout, outBuffer, k);
+					midiSend(midiout, outBuffer, k, &runningStatusOut);
 					readState = PROCESS_AT; // Handle input running status, ready to receive more aftertouch data
 					break;
 				default:
