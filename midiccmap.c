@@ -221,8 +221,10 @@ int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int c
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
 		exit(-1);
 	};
-	for(int i=0; i<count; i++){
-		if (outBuffer[i] & 0x80) *status=outBuffer[i];
+	if(status){
+		for(int i=0; i<count; i++){
+			if (outBuffer[i] & 0x80) *status=outBuffer[i];
+		}
 	}
 	if(verbose>1){
 		printf(" --> ");
@@ -350,13 +352,12 @@ int main(int argc, char *argv[]) {
 	unsigned char runningStatusIn=0; // Current MIDI Status from input stream
 	unsigned char runningStatusOut=0; // Current MIDI Status in output stream
 	unsigned char newStatusOut; // Future MIDI Status in output stream
-	// int pendingStatus=0; // FIXME Set if last output status is different from last input status
-	// This occurs when mapping cc to pitch
+	// Output (running) status can be different from last input status
+	// This occurs when mapping cc to pitch, and when mapping from aftertouch
 	unsigned char ccNum, ccVal, channel; // MIDI controller number and value
 	unsigned char atVal; // After-touch value (7 bits)
 	unsigned int pbVal; // Pitch bend value; unsigned offset by 8192, not signed!!
 	unsigned int parmVal; // RPN or NRPN value
-	int scale; // FIXME Scaling currently for pitch bend only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
 	enum readStates {PASSTHRU, PROCESS_CC, PROCESS_PARM, PROCESS_VAL, PROCESS_PB, PROCESS_AT} readState;
@@ -453,7 +454,7 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
-	int count = 0;         // Current count of bytes received.
+	int count = 0; // Current count of bytes received.
 	// int status_count = 0;         // Current count of status bytes received.
 	// int total_count = 0;
 	// int data_count; // Number of data bytes following MIDI status byte
@@ -486,28 +487,29 @@ int main(int argc, char *argv[]) {
 		count = 0;
 		readStatus = snd_rawmidi_read(midiin, inBuffer, buf_size);
 		while (readStatus == -EAGAIN) { // Keep polling
-			usleep(320); // One physical MIDI byte
+			usleep(320); // One physical MIDI byte (10 bits at 31250 bps)
 			readStatus = snd_rawmidi_read(midiin, inBuffer, buf_size);
 		}
 		// snd_rawmidi_drain(midiin); // Stuck on C0 anyway ??
 		// printf("\n>read status: %d %s, count: %d\n", readStatus, readStatus>0?"ok":snd_strerror(readStatus), count);
 		if (readStatus>0){
 			count = readStatus; // Not pretty
-			if(verbose>1) printf("\n[%u]", count);
 		}else{
 			errormessage("Problem reading MIDI input: %s", snd_strerror(readStatus));
 			break;
 		}
 		// total_count+=count;
-		fflush(stdout);	
 		
-		if(verbose>1) dump(inBuffer, count);
+		if(verbose>1){
+			printf("\n[%u]", count);
+			dump(inBuffer, count);
+			fflush(stdout);
+		}
 
 		for(int i=0; i<count; i++){
 			if (inBuffer[i] & 0x80){ // Received status byte, 80..FF
 		        if(verbose>1) printf("S");
 				runningStatusIn=inBuffer[i];
-				// pendingStatus=0;
 				channel = runningStatusIn & 0x0F;
 				// data_count=data_length[(runningStatusIn & 0x70)>>4];
 				switch(runningStatusIn & 0xF0) {
@@ -531,34 +533,24 @@ int main(int argc, char *argv[]) {
 					ccNum=inBuffer[i];
 					if(mapType[ccNum] == NONE){ // No mapping
 						// catch up with status
-						if ((writeStatus = snd_rawmidi_write(midiout, &runningStatusIn, 1)) < 0) {
-							errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-							break;
-						};
-						runningStatusOut=runningStatusIn;
-						// Send unchanged cc number
-						if ((writeStatus = snd_rawmidi_write(midiout, &inBuffer[i], 1)) < 0) {
-							errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-							break;
-						};
+						midiSend(midiout, &runningStatusIn, 1, &runningStatusOut);
 						if(verbose>1) printf("s");
+
+						// Send unchanged cc number
+						midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
 						readState = PROCESS_VAL;
 					}else if(mapType[ccNum] == NRPN || mapType[ccNum] == RPN){
 						readState = PROCESS_PARM;
 						// Do nothing until value is received
 					}else if(mapType[ccNum] == CC){
 						// Catch up with status
-						if ((writeStatus = snd_rawmidi_write(midiout, &runningStatusIn, 1)) < 0) {
-							errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-							break;
-						};
-						runningStatusOut=runningStatusIn;
+						midiSend(midiout, &runningStatusIn, 1, &runningStatusOut);
 						if(verbose>1) printf("s");
+						
 						// Send remapped cc
-						if ((writeStatus = snd_rawmidi_write(midiout, &mapNum[ccNum], 1)) < 0) {
-							errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-							break;
-						};
+						outBuffer[0]=mapNum[ccNum] & 0x7F;
+						midiSend(midiout, outBuffer, 1, &runningStatusOut);
+
 						if(verbose>1) printf("c 0x%02x ", mapNum[ccNum]);
 						readState = PROCESS_VAL; // Next byte will be cc value
 						continue; // Done processing cc number
@@ -578,7 +570,6 @@ int main(int argc, char *argv[]) {
 					newStatusOut=0xB0+channel;
 					if(newStatusOut!=runningStatusOut){
 					    outBuffer[k++]=newStatusOut;
-					    // runningStatusOut=newStatusOut;
 					}
 					outBuffer[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
 					outBuffer[k++]=(mapNum[ccNum]>>7)&0x7F; // mapMSB[ccNum];
@@ -605,10 +596,7 @@ int main(int argc, char *argv[]) {
 					// Hence next state PROCESS_CC
 					ccVal=mapValFrom[ccNum]+inBuffer[i]*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
 					if (ccVal>127) ccVal=127;
-					if ((writeStatus = snd_rawmidi_write(midiout, &ccVal, 1)) < 0) {
-						errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-						exit(-1);
-					}
+					midiSend(midiout, &ccVal, 1, &runningStatusOut);
 					readState = PROCESS_CC;
 					break;
 				case PROCESS_PB:
@@ -620,7 +608,7 @@ int main(int argc, char *argv[]) {
 					newStatusOut=0xE0+channel;
 					if(newStatusOut!=runningStatusOut){
 						outBuffer[k++]=newStatusOut;
-						runningStatusOut=newStatusOut;
+						// runningStatusOut=newStatusOut;
 					}
 					outBuffer[k++]=pbVal & 0x7F;
 					outBuffer[k++]=pbVal >>7;
@@ -646,7 +634,6 @@ int main(int argc, char *argv[]) {
 							newStatusOut=runningStatusIn;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
-								runningStatusOut=newStatusOut;
 							}
 							outBuffer[k++]=atVal;
 							break;
@@ -656,7 +643,6 @@ int main(int argc, char *argv[]) {
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
-								runningStatusOut=newStatusOut;
 							}
 						    outBuffer[k++]=atNum;
 						    outBuffer[k++]=ccVal;
@@ -667,7 +653,6 @@ int main(int argc, char *argv[]) {
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
-								runningStatusOut=newStatusOut;
 							}
 							outBuffer[k++]=(atType == RPN)?0x65:0x63;
 							outBuffer[k++]=(atNum>>7)&0x7F;
@@ -688,7 +673,6 @@ int main(int argc, char *argv[]) {
 							newStatusOut=0xE0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
-								runningStatusOut=newStatusOut;
 							}
 							outBuffer[k++]=pbVal & 0x7F;
 							outBuffer[k++]=pbVal >>7;
@@ -710,12 +694,15 @@ int main(int argc, char *argv[]) {
 				} // End of switch readState
 			}
 			if (readState == PASSTHRU){
+				midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
+				/*
 				if ((writeStatus = snd_rawmidi_write(midiout, &inBuffer[i], 1)) < 0) {
 			        errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
 					exit(-1);
 		        }
+		        */
 		        if(inBuffer[i]&0x80){
-					runningStatusOut=inBuffer[i];
+					// runningStatusOut=inBuffer[i];
 					if(verbose){
 						printf("s");
 						fflush(stdout);
