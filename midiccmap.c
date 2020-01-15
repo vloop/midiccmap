@@ -209,9 +209,13 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 	mapValFrom[cc_from]=val_from;
 	mapValTo[cc_from]=val_to;
 	if(verbose)
-		printf("cc %u (0x%02x) to type %u %s %s %u (0x%02x) from %d to %d\n", cc_from, cc_from, m, mapNames[m],
-		    (m==PB)?"scale":"value", // FIXME shouldn't use map_to as scale
-		    map_to, map_to, val_from, val_to);
+	    if (m==PB){
+			printf("cc %u (0x%02x) to type %u %s from %d to %d\n", cc_from, cc_from, m, mapNames[m],
+				val_from, val_to);
+		}else{
+			printf("cc %u (0x%02x) to type %u %s number %u (0x%02x) from %d to %d\n", cc_from, cc_from, m, mapNames[m],
+				map_to, map_to, val_from, val_to);
+		}
 	return(0);
 }
 
@@ -276,7 +280,6 @@ int readIniFile(char *filename){
 					}else if (strcmp(start, sectionNames[PB])==0){ currentType = PB;
 					}else printf("Warning: skipping section %s\n", start);
 				}else if (currentType != NONE){ // map data: source destination
-					// TODO optional val_from val_to
 					// Special source: aftertouch
 					int atSource;
 					if (strncmp(start, "AT", 2)==0) {
@@ -284,7 +287,7 @@ int readIniFile(char *filename){
 						start+=2;
 					}else{
 						atSource=0;
-						// Read th cc we are mapping from
+						// Read the cc we are mapping from
 						n1=strtoul(start, &tail, 0);
 						start=tail;
 					}
@@ -328,15 +331,17 @@ int readIniFile(char *filename){
 					}else{
 						if(atSource){
 							atType=currentType;
-							// atLSB=n2 & 0x7F;
-							// atMSB=n2 >> 7;
 							atNum=n2;
 							atValFrom=valFrom;
 							atValTo=valTo;
 							if(verbose)
-								printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n", atType, mapNames[atType],
-									// (atType==PB)?"scale":"value", // FIXME shouldn't use map_to as scale
-									atNum, atNum, atValFrom, atValTo);
+								if (atType==PB){
+									printf("aftertouch to type %u %s values from %d to %d\n",
+										atType, mapNames[atType], atValFrom, atValTo);
+								}else{
+									printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
+										atType, mapNames[atType], atNum, atNum, atValFrom, atValTo);
+								}
 						}else{
 							if (set_maps(currentType, n1, n2, valFrom, valTo)){
 								errormessage("Error: invalid mapping, aborting");
@@ -383,7 +388,6 @@ int main(int argc, char *argv[]) {
 	char *filename;
 	// Process command-line options
 	while (i<argc){
-		// printf("\n%u %s", i, argv[i]);
 		int cc, nrpn;
 	    if (argv[i][0]=='-'){
 			if (need_map){
@@ -397,7 +401,7 @@ int main(int argc, char *argv[]) {
 				case 'h':
 					usage(argv[0]);
 					break;
-				// 'n' 'r' 'c' NRPN, RPN or CC mapping
+				// 'n' 'r' 'c' 'p': NRPN, RPN, CC or pitch bend mapping
 				case 'n':
 					currentType=NRPN;
 					break;
@@ -416,96 +420,8 @@ int main(int argc, char *argv[]) {
 						errormessage("Error: missing filename");
 						exit(-1);
 					}
-					// TODO move file read to separate function
 					filename=argv[i];
 					readIniFile(filename);
-					/*
-					printf("Reading file %s\n", filename);
-					
-					FILE *fp;
-					char *line = NULL;
-					char *start;
-					size_t len = 0;
-					ssize_t read;
-
-					fp = fopen(filename, "r");
-					if (fp == NULL){
-						errormessage("Error: cannot open file %s", filename);
-						exit(EXIT_FAILURE);
-					}
-					currentType = NONE;
-					const char *sectionNames[]={"None\n", "[CcToNrpn]\n", "[CcToRpn]\n", "[CcToCc]\n", "[CcToPb]\n"};
-					while ((read = getline(&line, &len, fp)) != -1) {
-						int valFrom, valTo;
-						if (len>0){
-							// printf("Retrieved line of length %zu:\n", read);
-							start=line;
-							while(*start==' ' || *start=='\t') start++;
-							if (start[0]!='#' && start[0]!=';'){ // Skip comment lines
-								if (start[0]=='['){ // section header									
-									currentType = NONE;
-									// todo: case insensitive, ignore trailing blanks (needs custom stricmp)
-									if (strcmp(start, sectionNames[NRPN])==0){ currentType = NRPN;
-									}else if (strcmp(start, sectionNames[RPN])==0){ currentType = RPN;
-									}else if (strcmp(start, sectionNames[CC])==0){ currentType = CC;
-									}else if (strcmp(start, sectionNames[PB])==0){ currentType = PB;
-									}else printf("Warning: skipping section %s\n", start);
-								}else if (currentType != NONE){ // map data: source destination
-									// TODO optional val_from val_to
-									// Special source: aftertouch
-									int atSource;
-									if (strncmp(start, "AT", 2)==0) {
-										atSource=1;
-										start+=2;
-									}else{
-										atSource=0;
-										// Read th cc we are mapping from
-										n1=strtoul(start, &tail, 0);
-										start=tail;
-									}
-									// Read the cc/rpn/nrpn we are mapping to (not for pitch bend)
-									if(currentType!=PB){
-										while(*start==' ' || *start=='\t') start++;
-										if (*start==',') start++; // optional comma separator
-										n2=strtoul(start, &tail, 0);
-										start=tail;
-									}
-									valFrom=mapFromDefault[currentType];
-									valTo=mapToDefault[currentType];
-									// TODO read optional signed range
-									while(*start==' ' || *start=='\t') start++;
-									if (*start==',') start++; // accept trailing comma
-									while(*start==' ' || *start=='\t') start++;
-									if (*start && *start != '#' && *start != ';' && *start != '\n'){
-										errormessage("Error: invalid destination %s", start);
-										exit(-1);
-									}else{
-										if(atSource){
-											atType=currentType;
-											// atLSB=n2 & 0x7F;
-											// atMSB=n2 >> 7;
-											atNum=n2;
-											atValFrom=valFrom;
-											atValTo=valTo;
-											if(verbose)
-												printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n", atType, mapNames[atType],
-													// (atType==PB)?"scale":"value", // FIXME shouldn't use map_to as scale
-													atNum, atNum, atValFrom, atValTo);
-										}else{
-											if (set_maps(currentType, n1, n2, valFrom, valTo)){
-												errormessage("Error: invalid mapping, aborting");
-												exit(-1);
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-
-					fclose(fp);
-					if (line) free(line);
-					*/
 					break;
 				default:
 					errormessage("Error: Unknown option %s", argv[i]);
@@ -519,7 +435,7 @@ int main(int argc, char *argv[]) {
 					errormessage("Error: invalid destination \"%s\"", argv[i]);
 					exit(-1);
 				}
-				// TODO allow range specification instead of defaults on command line ?
+				// TODO allow range specification instead of defaults also on command line ?
 				int valFrom, valTo;
 				valFrom=mapFromDefault[currentType];
 				valTo=mapToDefault[currentType];
@@ -694,7 +610,7 @@ int main(int argc, char *argv[]) {
 					    runningStatusOut=newStatusOut;
 					}
 					outBuffer[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
-					outBuffer[k++]=mapNum[ccNum]>>7; // mapMSB[ccNum];
+					outBuffer[k++]=(mapNum[ccNum]>>7)&0x7F; // mapMSB[ccNum];
 					// outBuffer[3]=0xB0+channel; // Unneeded, unchanged running status
 					outBuffer[k++]=(mapType[ccNum] == RPN)?0x64:0x62;
 					outBuffer[k++]=mapNum[ccNum]&0x7f; // mapLSB[ccNum];
@@ -713,14 +629,14 @@ int main(int argc, char *argv[]) {
 					readState = PROCESS_CC;
 					break;
 				case PROCESS_VAL:
-				    // CC mapping specific, send value TODO scaling
+				    // CC mapping specific, send value
 					// Like passthru except a cc num could follow (running status is 0xB_ )
 					// Hence next state PROCESS_CC
 					ccVal=mapValFrom[ccNum]+inBuffer[i]*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
 					if (ccVal>127) ccVal=127;
 					if ((writeStatus = snd_rawmidi_write(midiout, &ccVal, 1)) < 0) {
 						errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-						exit(-1); // break;
+						exit(-1);
 					}
 					readState = PROCESS_CC;
 					break;
@@ -728,8 +644,6 @@ int main(int argc, char *argv[]) {
 				    // Pitch bend mapping specific, send scaled value
 					if(verbose>1) printf("P");
 					ccVal=inBuffer[i];
-					// scale=(mapMSB[ccNum]<<7) + mapLSB[ccNum]; // FIXME
-					// pbVal=8192+(scale*ccVal)/127;
 					pbVal=mapValFrom[ccNum]+ccVal*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
 					k=0;
 					newStatusOut=0xE0+channel;
@@ -789,7 +703,7 @@ int main(int argc, char *argv[]) {
 								runningStatusOut=newStatusOut;
 							}
 							outBuffer[k++]=(atType == RPN)?0x65:0x63;
-							outBuffer[k++]=atNum>>7;
+							outBuffer[k++]=(atNum>>7)&0x7F;
 							outBuffer[k++]=(atType == RPN)?0x64:0x62;
 							outBuffer[k++]=atNum&0x7F;
 							outBuffer[k++]=0x06; // Data entry MSB
@@ -850,18 +764,6 @@ int main(int argc, char *argv[]) {
 			}
 		}
 		count=0;
-		/*
-		if ((unsigned char)inBuffer[0] >= 0x80) {   // command byte: print in hex
-		printf("\n%5u:0x%x ", count, (unsigned char)inBuffer[0]);
-		status_count++;
-		} else {
-		printf("%d ", (unsigned char)inBuffer[0]);
-		}
-		fflush(stdout);
-		if (count % 20 == 0) {  // print a newline to avoid line-wrapping
-		 printf("\n   ");
-		}
-		*/ 
 	}
 
 //	printf("\nTotal:%5u\n", total_count);
