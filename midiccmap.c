@@ -88,27 +88,23 @@ int verbose=0;
 
 // We need to map 128 possible MIDI controller numbers
 // What about a per channel map?
-// TODO: use a struct
 #define map_size (128)
+
 enum MapType {NONE, NRPN, RPN, CC, PB}; // What about LSB/MSB?
 const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"};
 int mapFromDefault[]={0, 0, 0, 0, 8192};
-int mapToMax[]={127, 16383, 16383, 127, 16383};
-int mapToDefault[]={127, 16383, 16383, 127, 16383}; // Default to max
-// CC mapping
-enum MapType mapType[map_size];
-// unsigned char mapLSB[map_size];
-// unsigned char mapMSB[map_size];
-unsigned int mapNum[map_size];
-int mapValFrom[map_size], mapValTo[map_size];
-// After-touch mapping
-enum MapType atType;
-// unsigned char atLSB;
-// unsigned char atMSB;
-unsigned int atNum;
-int atValFrom, atValTo;
+int mapToMax[]={0, 16383, 16383, 127, 16383};
+int mapToDefault[]={0, 16383, 16383, 127, 16383}; // Default to max
 
-// function declarations:
+struct MidiMap {
+	enum MapType type;
+	unsigned int num;
+	int valFrom;
+	int valTo;
+};
+struct MidiMap ccMaps[map_size]; // CC mapping for each CC
+struct MidiMap atMap; // After-touch mapping
+
 void errormessage(const char *format, ...);
 
 ///////////////////////////////////////////////////////////////////////////
@@ -165,10 +161,10 @@ int usage(const char * command){
 	printf("only 7 bits of the remapped value are significant.\n");
 }
 
-int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to, const long val_from, const long val_to){
+int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, const long val_from, const long val_to){
 	int maxVal;
-	if (cc_from>=map_size){
-		errormessage("Error: invalid source controller number %u", cc_from);
+	if (ccNum>=map_size){
+		errormessage("Error: invalid source controller number %u", ccNum);
 		return(-1);
 	}
 	switch (m) {
@@ -194,15 +190,15 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 	}
 	if(verbose){
 	    if (m==PB){
-			printf("cc %u (0x%02x) to type %u %s from %d to %d\n", cc_from, cc_from, m, mapNames[m],
+			printf("cc %u (0x%02x) to type %u %s from %d to %d\n", ccNum, ccNum, m, mapNames[m],
 				val_from, val_to);
 		}else{
-			printf("cc %u (0x%02x) to type %u %s number %u (0x%02x) from %d to %d\n", cc_from, cc_from, m, mapNames[m],
+			printf("cc %u (0x%02x) to type %u %s number %u (0x%02x) from %d to %d\n", ccNum, ccNum, m, mapNames[m],
 				map_to, map_to, val_from, val_to);
 		}
 	}
-	if(mapType[cc_from]!=NONE){
-		errormessage("Warning: duplicate definition for cc %u", cc_from);
+	if(ccMaps[ccNum].type!=NONE){
+		errormessage("Warning: duplicate definition for cc %u", ccNum);
 	}
 	
 	// Scaling values below are deliberately not checked.
@@ -212,23 +208,23 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 	// If scaling results in an out of range output value,
 	// it will be clipped to legal output range.
 	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
-		errormessage("Error: unusable output range %d .. %d for cc %u\n", val_from, val_to, cc_from);
+		errormessage("Error: unusable output range %d .. %d for cc %u\n", val_from, val_to, ccNum);
 		return(-1);
 	}
 	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
-		errormessage("Warning: output for cc %u will be clipped", cc_from);
+		errormessage("Warning: output for cc %u will be clipped", ccNum);
 	}
 	
-	mapType[cc_from]=m;
-	mapNum[cc_from]=map_to;
-	mapValFrom[cc_from]=val_from;
-	mapValTo[cc_from]=val_to;
+	ccMaps[ccNum].type=m;
+	ccMaps[ccNum].num=map_to;
+	ccMaps[ccNum].valFrom=val_from;
+	ccMaps[ccNum].valTo=val_to;
 	return(0);
 }
 
 int init_maps(){
 	for(int i=0; i<map_size; i++){
-		set_maps(NONE, i, 0, 0, 0);
+		setCcMap(NONE, i, 0, 0, 0);
 	}
 }
 
@@ -348,21 +344,21 @@ int readIniFile(const char *filename){
 						exit(-1);
 					}else{
 						if(atSource){
-							// TODO move to set_at_map
-							atType=currentType;
-							atNum=n2;
-							atValFrom=valFrom;
-							atValTo=valTo;
+							// TODO move to set_map(struct map, etc.)
+							atMap.type=currentType;
+							atMap.num=n2;
+							atMap.valFrom=valFrom;
+							atMap.valTo=valTo;
 							if(verbose)
-								if (atType==PB){
+								if (atMap.type==PB){
 									printf("aftertouch to type %u %s values from %d to %d\n",
-										atType, mapNames[atType], atValFrom, atValTo);
+										atMap.type, mapNames[atMap.type], atMap.valFrom, atMap.valTo);
 								}else{
 									printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
-										atType, mapNames[atType], atNum, atNum, atValFrom, atValTo);
+										atMap.type, mapNames[atMap.type], atMap.num, atMap.num, atMap.valFrom, atMap.valTo);
 								}
 						}else{
-							if (set_maps(currentType, n1, n2, valFrom, valTo)){
+							if (setCcMap(currentType, n1, n2, valFrom, valTo)){
 								errormessage("Error: invalid mapping, aborting");
 								exit(-1);
 							}
@@ -396,7 +392,7 @@ int main(int argc, char *argv[]) {
 	snd_rawmidi_t* midiout = NULL;
 
 	init_maps();
-	atType=NONE;
+	atMap.type=NONE;
 	
 	int i=1;
 	int need_map=0;
@@ -455,7 +451,7 @@ int main(int argc, char *argv[]) {
 				int valFrom, valTo;
 				valFrom=mapFromDefault[currentType];
 				valTo=mapToDefault[currentType];
-				if (set_maps(currentType, n1, n2, valFrom, valTo)){
+				if (setCcMap(currentType, n1, n2, valFrom, valTo)){
 					errormessage("Error: invalid mapping, aborting");
 					exit(-1);
 				}
@@ -561,7 +557,7 @@ int main(int argc, char *argv[]) {
 					// Next state depends on map type
 					if(verbose>1) printf("1");
 					ccNum=inBuffer[i];
-					if(mapType[ccNum] == NONE){ // No mapping
+					if(ccMaps[ccNum].type == NONE){ // No mapping
 						// catch up with status
 						midiSend(midiout, &runningStatusIn, 1, &runningStatusOut);
 						if(verbose>1) printf("s");
@@ -569,33 +565,33 @@ int main(int argc, char *argv[]) {
 						// Send unchanged cc number
 						midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
 						readState = PROCESS_VAL;
-					}else if(mapType[ccNum] == NRPN || mapType[ccNum] == RPN){
+					}else if(ccMaps[ccNum].type == NRPN || ccMaps[ccNum].type == RPN){
 						readState = PROCESS_PARM;
 						// Do nothing until value is received
-					}else if(mapType[ccNum] == CC){
+					}else if(ccMaps[ccNum].type == CC){
 						k=0;
 						// Catch up with status
 						outBuffer[k++]=runningStatusIn;
 						if(verbose>1) printf("s");
 						
 						// Send remapped cc
-						outBuffer[k++]=mapNum[ccNum] & 0x7F;
+						outBuffer[k++]=ccMaps[ccNum].num & 0x7F;
 						midiSend(midiout, outBuffer, k, &runningStatusOut);
 
-						if(verbose>1) printf("c 0x%02x ", mapNum[ccNum]);
+						if(verbose>1) printf("c 0x%02x ", ccMaps[ccNum].num);
 						readState = PROCESS_VAL; // Next byte will be cc value
 						continue; // Done processing cc number
-					}else if(mapType[ccNum] == PB){
+					}else if(ccMaps[ccNum].type == PB){
 						readState = PROCESS_PB;
 					}else{
-						errormessage("Internal error - unknown cc map type %u\n", mapType[ccNum]);
+						errormessage("Internal error - unknown cc map type %u\n", ccMaps[ccNum].type);
 						exit(-1);
 					}
 					break;
 				case PROCESS_PARM: // RPN/NRPN mapping specific
 					if(verbose>1) printf("2");
 					ccVal=inBuffer[i];
-					parmVal=mapValFrom[ccNum]+ccVal*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					parmVal=ccMaps[ccNum].valFrom+ccVal*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
 					if (parmVal<0) parmVal=0;
 					if (parmVal>16383) parmVal=16383;
 					// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
@@ -604,11 +600,11 @@ int main(int argc, char *argv[]) {
 					if(newStatusOut!=runningStatusOut){
 					    outBuffer[k++]=newStatusOut;
 					}
-					outBuffer[k++]=(mapType[ccNum] == RPN)?0x65:0x63;
-					outBuffer[k++]=(mapNum[ccNum]>>7)&0x7F; // mapMSB[ccNum];
+					outBuffer[k++]=(ccMaps[ccNum].type == RPN)?0x65:0x63;
+					outBuffer[k++]=(ccMaps[ccNum].num>>7)&0x7F; // mapMSB[ccNum];
 					// outBuffer[3]=0xB0+channel; // Unneeded, unchanged running status
-					outBuffer[k++]=(mapType[ccNum] == RPN)?0x64:0x62;
-					outBuffer[k++]=mapNum[ccNum]&0x7f; // mapLSB[ccNum];
+					outBuffer[k++]=(ccMaps[ccNum].type == RPN)?0x64:0x62;
+					outBuffer[k++]=ccMaps[ccNum].num&0x7f; // mapLSB[ccNum];
 					// outBuffer[6]=0xB0+channel; // Unneeded, unchanged running status
 					outBuffer[k++]=0x06; // Data entry MSB
 					outBuffer[k++]=(parmVal>>7)&0x7F;
@@ -627,7 +623,7 @@ int main(int argc, char *argv[]) {
 				    // CC mapping specific, send value
 					// Like passthru except a cc num could follow (running status is 0xB_ )
 					// Hence next state PROCESS_CC
-					ccVal=mapValFrom[ccNum]+inBuffer[i]*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					ccVal=ccMaps[ccNum].valFrom+inBuffer[i]*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
 					if (ccVal<0) ccVal=0;
 					if (ccVal>127) ccVal=127;
 					outBuffer[0]=ccVal;
@@ -640,7 +636,7 @@ int main(int argc, char *argv[]) {
 				    // i.e. values below 8192 are interpreted as negative by synths
 					if(verbose>1) printf("P");
 					ccVal=inBuffer[i];
-					pbVal=mapValFrom[ccNum]+ccVal*(mapValTo[ccNum]-mapValFrom[ccNum])/127;
+					pbVal=ccMaps[ccNum].valFrom+ccVal*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
 					if (pbVal<0) pbVal=0;
 					if (pbVal>16383) pbVal=16383;
 					k=0;
@@ -668,7 +664,7 @@ int main(int argc, char *argv[]) {
 					// sendCc(snd_rawmidi_t* midiout, unsigned char &runningStatusOut, unsigned char channel, unsigned char ccNum, unsigned char ccVal, int fromVal, int toVal)
 					// sendPb(snd_rawmidi_t* midiout, unsigned char &runningStatusOut, unsigned char channel, unsigned int pbVal, int fromVal, int toVal)
 					k=0;
-					switch (atType){
+					switch (atMap.type){
 						case NONE:
 							newStatusOut=runningStatusIn;
 							if(newStatusOut!=runningStatusOut){
@@ -677,29 +673,29 @@ int main(int argc, char *argv[]) {
 							outBuffer[k++]=atVal;
 							break;
 						case CC:
-							ccVal=atValFrom+atVal*(atValTo-atValFrom)/127;
+							ccVal=atMap.valFrom+atVal*(atMap.valTo-atMap.valFrom)/127;
 							if (ccVal<0) ccVal=0;
 							if (ccVal>127) ccVal=127;
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
 							}
-						    outBuffer[k++]=atNum;
+						    outBuffer[k++]=atMap.num;
 						    outBuffer[k++]=ccVal;
 							break;
 						case RPN:
 						case NRPN:
-							parmVal=atValFrom+atVal*(atValTo-atValFrom)/127;
+							parmVal=atMap.valFrom+atVal*(atMap.valTo-atMap.valFrom)/127;
 							if (parmVal<0) parmVal=0;
 							if (parmVal>16383) parmVal=16383;
 							newStatusOut=0xB0+channel;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
 							}
-							outBuffer[k++]=(atType == RPN)?0x65:0x63;
-							outBuffer[k++]=(atNum>>7)&0x7F;
-							outBuffer[k++]=(atType == RPN)?0x64:0x62;
-							outBuffer[k++]=atNum&0x7F;
+							outBuffer[k++]=(atMap.type == RPN)?0x65:0x63;
+							outBuffer[k++]=(atMap.num>>7)&0x7F;
+							outBuffer[k++]=(atMap.type == RPN)?0x64:0x62;
+							outBuffer[k++]=atMap.num&0x7F;
 							outBuffer[k++]=0x06; // Data entry MSB
 							outBuffer[k++]=(parmVal>>7)&0x7F;
 							outBuffer[k++]=0x26; // Data entry LSB
@@ -711,7 +707,7 @@ int main(int argc, char *argv[]) {
 							outBuffer[k++]=0x7F;
 							break;
 						case PB:
-							pbVal=atValFrom+ccVal*(atValTo-atValFrom)/127; // ?? 128
+							pbVal=atMap.valFrom+ccVal*(atMap.valTo-atMap.valFrom)/127; // ?? 128
 							if (pbVal<0) pbVal=0;
 							if (pbVal>16383) pbVal=16383;
 							newStatusOut=0xE0+channel;
@@ -722,7 +718,7 @@ int main(int argc, char *argv[]) {
 							outBuffer[k++]=pbVal >>7;
 							break;
 						default:
-							errormessage("Internal error - unknown aftertouch map type %u\n", atType);
+							errormessage("Internal error - unknown aftertouch map type %u\n", atMap.type);
 							exit(-1);
 					}
 					// We'll never need to resend input status:
