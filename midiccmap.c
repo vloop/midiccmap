@@ -121,8 +121,9 @@ and will send:
 - cc 9 to nrpn 10 and cc 11 to nrpn 12
 - all other midi messages unchanged
 */
+// TODO handle ctl-C
 // TODO maybe Config file ~ TOML ?
-/* Example
+/* Example of TOML-like config (not implemented!)
 nrpn = [
  [1, 2],
  [9, 10],
@@ -137,16 +138,7 @@ cc = [
 ]
  */
 // for now use case sensitive sections, no brackets on map lines, commas optional
-/* Example
-[NRPN]
-1, 2
-9, 0x0A
-[RPN]
-3, 4
-[CC]
-5, 6
-7, 8
-*/
+// Example: see midiccmap.ini
 
 int usage(const char * command){
 	printf("Use: %s [-option]... [cc value]...\n", command);
@@ -165,11 +157,9 @@ int usage(const char * command){
 	printf("please note that cc values are only 7 bits, therefore\n");
 	printf("even though rpn/nrpn/pitch bend are 14 bit values\n");
 	printf("only 7 bits of the remapped value are significant.\n");
-	exit(-1);
 }
 
 int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to, const long val_from, const long val_to){
-	// FIXME add scaling
 	if (cc_from>=map_size){
 		errormessage("Error: invalid source controller number %u", cc_from);
 		return(-1);
@@ -189,13 +179,7 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 			}
 			break;
 		case PB:
-		/*
-			if(map_to>8191){ // FIXME shouldn't use map_to as scale
-				errormessage("Error: invalid pitch bend range %u", map_to);
-				return(-1);
-			}
-			break;
-			*/
+		// map_to is irrelevant for pitch bend, no need to check
 		case NONE:
 			break;
 		default:
@@ -203,8 +187,6 @@ int set_maps(const enum MapType m, const unsigned cc_from, const unsigned map_to
 			return(-1);
 	}
 	mapType[cc_from]=m;
-	// mapLSB[cc_from]=map_to & 0x7F;
-	// mapMSB[cc_from]=map_to >> 7;
 	mapNum[cc_from]=map_to;
 	mapValFrom[cc_from]=val_from;
 	mapValTo[cc_from]=val_to;
@@ -225,26 +207,27 @@ int init_maps(){
 	}
 }
 
-int dump(const unsigned char *inBuffer, const int count) {
+int dump(const unsigned char *buffer, const int count) {
 	for(int i=0; i<count; i++){
-		printf("%3u ", inBuffer[i]);
+		printf("%3u ", buffer[i]);
 	}
 	fflush(stdout);
 }
 
-int	midiSend(snd_rawmidi_t* midiout, const char *outBuffer, unsigned int k){
+int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count){
+	// Should we update runningStatusOut here, or in the calling code?
 	int writeStatus;
-	if ((writeStatus = snd_rawmidi_write(midiout, outBuffer, k)) < 0) {
+	if ((writeStatus = snd_rawmidi_write(midiout, outBuffer, count)) < 0) {
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
 		exit(-1);
 	};
 	if(verbose>1){
 		printf(" --> ");
-		dump(outBuffer, k);
+		dump(outBuffer, count);
 	}
 }
 
-int readIniFile(char *filename){
+int readIniFile(const char *filename){
 	printf("Reading file %s\n", filename);
 	enum MapType currentType;
 	unsigned long n1, n2;
@@ -330,6 +313,7 @@ int readIniFile(char *filename){
 						exit(-1);
 					}else{
 						if(atSource){
+							// TODO move to set_at_map
 							atType=currentType;
 							atNum=n2;
 							atValFrom=valFrom;
@@ -363,12 +347,12 @@ int main(int argc, char *argv[]) {
 	unsigned char runningStatusIn=0; // Current MIDI Status from input stream
 	unsigned char runningStatusOut=0; // Current MIDI Status in output stream
 	unsigned char newStatusOut; // Future MIDI Status in output stream
-	int pendingStatus=0; // FIXME Set if last output status is different from last input status
+	// int pendingStatus=0; // FIXME Set if last output status is different from last input status
 	// This occurs when mapping cc to pitch
 	unsigned char ccNum, ccVal, channel; // MIDI controller number and value
-	unsigned char atVal; // After-touch value
+	unsigned char atVal; // After-touch value (7 bits)
 	unsigned int pbVal; // Pitch bend value; unsigned offset by 8192, not signed!!
-	unsigned int parmVal;
+	unsigned int parmVal; // RPN or NRPN value
 	int scale; // FIXME Scaling currently for pitch bend only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
@@ -385,7 +369,6 @@ int main(int argc, char *argv[]) {
 	long int parsed;
 	unsigned long n1, n2;
 	char *tail;
-	char *filename;
 	// Process command-line options
 	while (i<argc){
 		int cc, nrpn;
@@ -400,7 +383,7 @@ int main(int argc, char *argv[]) {
 					break;
 				case 'h':
 					usage(argv[0]);
-					break;
+					exit(0); // break;
 				// 'n' 'r' 'c' 'p': NRPN, RPN, CC or pitch bend mapping
 				case 'n':
 					currentType=NRPN;
@@ -420,8 +403,7 @@ int main(int argc, char *argv[]) {
 						errormessage("Error: missing filename");
 						exit(-1);
 					}
-					filename=argv[i];
-					readIniFile(filename);
+					readIniFile(argv[i]);
 					break;
 				default:
 					errormessage("Error: Unknown option %s", argv[i]);
@@ -445,6 +427,7 @@ int main(int argc, char *argv[]) {
 				}
 				need_map=0;
 			}else{
+				// TODO allow aftertouch source also on command line ?
 				n1=strtoul(argv[i], &tail, 0);
 				if (*tail){
 					errormessage("Error: invalid source controller number%s", argv[i]);
@@ -467,10 +450,9 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
-	int max_count = 0;   // Exit after this many bytes have been received, 0 for no limit.
 	int count = 0;         // Current count of bytes received.
 	// int status_count = 0;         // Current count of status bytes received.
-	int total_count = 0;
+	// int total_count = 0;
 	// int data_count; // Number of data bytes following MIDI status byte
 	char inBuffer[buf_size];        // Storage for input buffer
 	unsigned char outBuffer[buf_size]; // cc 99, 98, 6, optionally 38, + reset rpn
@@ -488,7 +470,7 @@ int main(int argc, char *argv[]) {
 	// };
 	readState = PASSTHRU;
 
-	while (total_count<max_count || max_count<1) {
+	while (1) {
 		/* MIDI read, blocking version - don't use
 		// blocking mode on "virtual" drops bytes ???
 		while (count<buf_size && readStatus == 1) {
@@ -513,7 +495,7 @@ int main(int argc, char *argv[]) {
 			errormessage("Problem reading MIDI input: %s", snd_strerror(readStatus));
 			break;
 		}
-		total_count+=count;
+		// total_count+=count;
 		fflush(stdout);	
 		
 		if(verbose>1) dump(inBuffer, count);
@@ -522,10 +504,9 @@ int main(int argc, char *argv[]) {
 			if (inBuffer[i] & 0x80){ // Received status byte, 80..FF
 		        if(verbose>1) printf("S");
 				runningStatusIn=inBuffer[i];
-				pendingStatus=0;
+				// pendingStatus=0;
 				channel = runningStatusIn & 0x0F;
 				// data_count=data_length[(runningStatusIn & 0x70)>>4];
-				// readState = ((runningStatusIn & 0xF0) == 0xB0) ? PROCESS_CC : PASSTHRU;
 				switch(runningStatusIn & 0xF0) {
 					case 0xB0:
 						readState = PROCESS_CC;
@@ -537,19 +518,6 @@ int main(int argc, char *argv[]) {
 						readState = PASSTHRU;
 				}
 			}else{ // Received data byte, 00..7F
-				// This should no longer be needed
-				/*
-				if (pendingStatus){
-						// Resend changed status
-						// TODO this is not needed when incoming cc is also mapped to pb
-						if ((writeStatus = snd_rawmidi_write(midiout, &runningStatusIn, 1)) < 0) {
-							errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-							exit(-1);;
-						};
-						runningStatusOut=runningStatusIn;
-					pendingStatus=0;
-				}
-				*/
 		        if (verbose>1) printf("D");
 		        switch (readState){
 				case PASSTHRU:
@@ -661,7 +629,7 @@ int main(int argc, char *argv[]) {
 					// Sending it even when unneeded shouldn't harm
 					// Todo: have a pending_status variable to resend only when needed
 					// outBuffer[k++]=runningStatusIn;
-					pendingStatus=1; // FIXME
+					// pendingStatus=1; // FIXME
 					midiSend(midiout, outBuffer, k);
 					// We came here by processing a cc, more cc data bytes can follow
 					readState = PROCESS_CC;
@@ -717,8 +685,6 @@ int main(int argc, char *argv[]) {
 							outBuffer[k++]=0x7F;
 							break;
 						case PB:
-							// scale=(atMSB<<7) + atLSB; // FIXME
-							// pbVal=8192+(scale*atVal)/127;
 							pbVal=atValFrom+ccVal*(atValTo-atValFrom)/127; // ?? 128
 							newStatusOut=0xE0+channel;
 							if(newStatusOut!=runningStatusOut){
@@ -742,7 +708,7 @@ int main(int argc, char *argv[]) {
 					errormessage("Internal error - unexpected read state %u", readState);
 					exit(-1);
 				
-				} // Switch readState
+				} // End of switch readState
 			}
 			if (readState == PASSTHRU){
 				if ((writeStatus = snd_rawmidi_write(midiout, &inBuffer[i], 1)) < 0) {
@@ -763,8 +729,8 @@ int main(int argc, char *argv[]) {
 				}
 			}
 		}
-		count=0;
-	}
+		// count=0;
+	} // End of main while (1) loop
 
 //	printf("\nTotal:%5u\n", total_count);
 
