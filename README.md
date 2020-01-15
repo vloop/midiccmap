@@ -35,7 +35,7 @@ gcc -o midiccmap midiccmap.c -lasound
 ```
 sudo cp midiccmap /usr/local/bin/
 ```
-- Use
+## Usage
 ```
 midiccmap -h
 ```
@@ -45,3 +45,4 @@ Mapping can be set on command line or in .ini file,
 
 Scaling can only be set in .ini file.
 
+See midiccmap.ini for commented examples.
