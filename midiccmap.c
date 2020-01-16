@@ -90,8 +90,8 @@ int verbose=0;
 // What about a per channel map?
 #define map_size (128)
 
-enum MapType {NONE, NRPN, RPN, CC, PB}; // What about LSB/MSB?
-const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"};
+enum MapType {NONE, NRPN, RPN, CC, PB};
+const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"}; // TODO "AT"
 int mapFromDefault[]={0, 0, 0, 0, 8192};
 int mapToMax[]={0, 16383, 16383, 127, 16383};
 int mapToDefault[]={0, 16383, 16383, 127, 16383}; // Default to max
@@ -161,12 +161,8 @@ int usage(const char * command){
 	printf("only 7 bits of the remapped value are significant.\n");
 }
 
-int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, const long val_from, const long val_to){
+int setMidiMap(struct MidiMap *map, const enum MapType m, const unsigned num, const unsigned map_to, const long val_from, const long val_to){
 	int maxVal;
-	if (ccNum>=map_size){
-		errormessage("Error: invalid source controller number %u", ccNum);
-		return(-1);
-	}
 	switch (m) {
 		case CC:
 		case RPN:
@@ -188,6 +184,37 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, 
 			errormessage("Error: invalid map type %u", m);
 			return(-1);
 	}
+	if(map->type!=NONE){
+		errormessage("Warning: duplicate definition for cc %u", num);
+	}
+	
+	// Scaling values below are deliberately not checked.
+	// Range can be reversed, and bounds can be negative.
+	// Scaling values outside normal parameter ranges are allowed.
+	// This allows extra sensitivity to input values,
+	// at the expense of precision.
+	// If scaling results in an out of range output value,
+	// it will be clipped to legal output range.
+	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
+		errormessage("Error: unusable output range %d .. %d for control %u\n", val_from, val_to, num);
+		return(-1);
+	}
+	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
+		errormessage("Warning: output for control %u will be clipped", num);
+	}
+	map->type=m;
+	map->num=map_to;
+	map->valFrom=val_from;
+	map->valTo=val_to;
+	return(0);
+}
+
+
+int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, const long val_from, const long val_to){
+	if (ccNum>=map_size){
+		errormessage("Error: invalid source controller number %u", ccNum);
+		return(-1);
+	}
 	if(verbose){
 	    if (m==PB){
 			printf("cc %u (0x%02x) to type %u %s from %d to %d\n", ccNum, ccNum, m, mapNames[m],
@@ -197,35 +224,25 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, 
 				map_to, map_to, val_from, val_to);
 		}
 	}
-	if(ccMaps[ccNum].type!=NONE){
-		errormessage("Warning: duplicate definition for cc %u", ccNum);
+	return(setMidiMap(&ccMaps[ccNum], m, ccNum, map_to, val_from, val_to));
+}
+
+int setAtMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
+	if (m==PB){
+		printf("aftertouch to type %u %s values from %d to %d\n",
+			m, mapNames[m], val_from, val_to);
+	}else{
+		printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
+			m, mapNames[m], map_to, map_to, val_from, val_to);
 	}
-	
-	// Scaling values below are deliberately not checked.
-	// Scaling values outside normal parameter ranges are allowed.
-	// This allows extra sensitivity to low input values,
-	// at the expense of precision.
-	// If scaling results in an out of range output value,
-	// it will be clipped to legal output range.
-	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
-		errormessage("Error: unusable output range %d .. %d for cc %u\n", val_from, val_to, ccNum);
-		return(-1);
-	}
-	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
-		errormessage("Warning: output for cc %u will be clipped", ccNum);
-	}
-	
-	ccMaps[ccNum].type=m;
-	ccMaps[ccNum].num=map_to;
-	ccMaps[ccNum].valFrom=val_from;
-	ccMaps[ccNum].valTo=val_to;
-	return(0);
+	return(setMidiMap(&atMap, m, 0, map_to, val_from, val_to));
 }
 
 int init_maps(){
 	for(int i=0; i<map_size; i++){
 		setCcMap(NONE, i, 0, 0, 0);
 	}
+	setAtMap(NONE, 0, 0, 0);
 }
 
 int dump(const unsigned char *buffer, const int count) {
@@ -236,7 +253,6 @@ int dump(const unsigned char *buffer, const int count) {
 }
 
 int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count, unsigned char *status){
-	// Should we update runningStatusOut here, or in the calling code?
 	int writeStatus;
 	if ((writeStatus = snd_rawmidi_write(midiout, outBuffer, count)) < 0) {
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
@@ -285,7 +301,8 @@ int readIniFile(const char *filename){
 			start=line;
 			while(*start==' ' || *start=='\t') start++;
 			if (start[0]!='#' && start[0]!=';'){ // Skip comment lines
-				if (start[0]=='['){ // section header									
+				if (start[0]=='['){
+					// section header									
 					currentType = NONE;
 					// todo: case insensitive, ignore trailing blanks (needs custom stricmp)
 					if (strcmp(start, sectionNames[NRPN])==0){ currentType = NRPN;
@@ -293,7 +310,8 @@ int readIniFile(const char *filename){
 					}else if (strcmp(start, sectionNames[CC])==0){ currentType = CC;
 					}else if (strcmp(start, sectionNames[PB])==0){ currentType = PB;
 					}else printf("Warning: skipping section %s\n", start);
-				}else if (currentType != NONE){ // map data: source destination
+				}else if (currentType != NONE){
+					// map data: source, destination, [min, max,]
 					// Special source: aftertouch
 					int atSource;
 					if (strncmp(start, "AT", 2)==0) {
@@ -344,19 +362,10 @@ int readIniFile(const char *filename){
 						exit(-1);
 					}else{
 						if(atSource){
-							// TODO move to set_map(struct map, etc.)
-							atMap.type=currentType;
-							atMap.num=n2;
-							atMap.valFrom=valFrom;
-							atMap.valTo=valTo;
-							if(verbose)
-								if (atMap.type==PB){
-									printf("aftertouch to type %u %s values from %d to %d\n",
-										atMap.type, mapNames[atMap.type], atMap.valFrom, atMap.valTo);
-								}else{
-									printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
-										atMap.type, mapNames[atMap.type], atMap.num, atMap.num, atMap.valFrom, atMap.valTo);
-								}
+							if (setAtMap(currentType, n2, valFrom, valTo)){
+								errormessage("Error: invalid mapping, aborting");
+								exit(-1);
+							}
 						}else{
 							if (setCcMap(currentType, n1, n2, valFrom, valTo)){
 								errormessage("Error: invalid mapping, aborting");
