@@ -1,17 +1,20 @@
 ## Summary
-midiccmap allows to map midi continuous controllers and aftertouch to
+midiccmap allows to map midi continuous controllers, pitch bend and aftertouch to
 - cc
-- nrpn
-- rpn
+- nrpn (non registered parameter number)
+- rpn (registered parameter number)
 - pitch bend
+- aftertouch
 
 cc and aftertouch are 7-bit values, while nrpn, rpn and pb are 14-bit.
 
 This means a scaling has to be applied.
 
-The output can only have 128 distinct values anyway.
+The output can only have 128 distinct values when the source is 7-bit.
 
-The output resolution and/or the range have to be reduced.
+When the source is 7-bit and the destination 14-bit,
+
+the output resolution and/or range have to be reduced.
 
 Default scaling maps to full output range.
 

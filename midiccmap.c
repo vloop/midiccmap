@@ -78,6 +78,7 @@
 #include <alsa/asoundlib.h>     /* Interface to the ALSA system */
 #include <unistd.h> /* for usleep */
 #include <stdlib.h> /* for strtoul */
+#include <signal.h> /* for SIGINT handling */
 
 // Setting inBuffer size to 1 resulted in data loss
 // when using virtual midi port.
@@ -85,6 +86,7 @@
 #define buf_size (1024)
 
 int verbose=0;
+static volatile int keepRunning = 1;
 
 // We need to map 128 possible MIDI controller numbers
 // What about a per channel map?
@@ -143,6 +145,10 @@ cc = [
 // for now we use case sensitive sections, no brackets on map lines, commas optional
 // Example: see midiccmap.ini
 
+void intHandler(int dummy) {
+    keepRunning = 0;
+}
+
 int usage(const char * command){
 	printf("Use: %s [-option]... [cc value]...\n", command);
 	printf("Options:\n");
@@ -187,7 +193,7 @@ int setMidiMap(struct MidiMap *map, const enum MapType m, const unsigned num, co
 			return(-1);
 	}
 	if(map->type!=NONE){
-		errormessage("Warning: duplicate definition");
+		errormessage("Warning: new mapping overrides previous one");
 	}
 	
 	// Scaling values below are deliberately not checked.
@@ -219,10 +225,12 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, 
 	}
 	if(verbose){
 	    if (m==PB || m==AT){
-			printf("cc %u (0x%02x) to type %u %s values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
+			// printf("CC %u (0x%02x) to type %u %s values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
+			printf("CC %u (0x%02x) to %s values from %d to %d\n", ccNum, ccNum, mapNames[m],
 				val_from, val_to);
 		}else{
-			printf("cc %u (0x%02x) to type %u %s number %u (0x%02x) values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
+			// printf("CC %u (0x%02x) to type %u %s number %u (0x%02x) values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
+			printf("CC %u (0x%02x) to %s %u (0x%02x) values from %d to %d\n", ccNum, ccNum, mapNames[m],
 				map_to, map_to, val_from, val_to);
 		}
 	}
@@ -232,11 +240,11 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, 
 int setAtMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
 	if(verbose){
 		if (m==PB || m==AT){
-			printf("Aftertouch to type %u %s values from %d to %d\n",
-				m, mapNames[m], val_from, val_to);
+			printf("Aftertouch to %s values from %d to %d\n",
+				mapNames[m], val_from, val_to);
 		}else{
-			printf("Aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
-				m, mapNames[m], map_to, map_to, val_from, val_to);
+			printf("Aftertouch to %s number %u (0x%02x) values from %d to %d\n",
+				mapNames[m], map_to, map_to, val_from, val_to);
 		}
 	}
 	return(setMidiMap(&atMap, m, 0, map_to, val_from, val_to));
@@ -245,11 +253,11 @@ int setAtMap(const enum MapType m, const unsigned map_to, const long val_from, c
 int setPbMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
 	if(verbose){
 		if (m==PB || m==AT){
-			printf("Pitch bend to type %u %s values from %d to %d\n",
-				m, mapNames[m], val_from, val_to);
+			printf("Pitch bend to %s values from %d to %d\n",
+				mapNames[m], val_from, val_to);
 		}else{
-			printf("Pitch bend to type %u %s number %u (0x%02x) values from %d to %d\n",
-				m, mapNames[m], map_to, map_to, val_from, val_to);
+			printf("Pitch bend to %s number %u (0x%02x) values from %d to %d\n",
+				mapNames[m], map_to, map_to, val_from, val_to);
 		}
 	}
 	return(setMidiMap(&pbMap, m, 0, map_to, val_from, val_to));
@@ -408,10 +416,10 @@ void readIniFile(const char *filename){
 	}
 	currentType = NONE;
 	while ((read = getline(&line, &len, fp)) != -1) {
-		if (len>0){ // Just skip empty lines
+		if (len>0){ // Just skip empty lines (should not happen, always at least \n)
 			start=line;
 			while(*start==' ' || *start=='\t') start++;
-			if (start[0]!='#' && start[0]!=';'){ // Skip comment lines
+			if (start[0]!='#' && start[0]!=';' && start[0]!='\n'){ // Skip comment and blank lines
 				if (start[0]=='['){
 					// section header									
 					currentType = NONE;
@@ -629,8 +637,10 @@ int main(int argc, char *argv[]) {
 	//	   printf("%u ", (unsigned char)inBuffer[i]);
 	// };
 	readState = PASSTHRU;
-
-	while (1) {
+	
+	signal(SIGINT, intHandler);
+	
+	while (keepRunning) {
 		/* MIDI read, blocking version - don't use
 		// blocking mode on "virtual" drops bytes ???
 		while (count<buf_size && readStatus == 1) {
@@ -642,7 +652,7 @@ int main(int argc, char *argv[]) {
 		// MIDI read, non-blocking version
 		count = 0;
 		readStatus = snd_rawmidi_read(midiin, inBuffer, buf_size);
-		while (readStatus == -EAGAIN) { // Keep polling
+		while (readStatus == -EAGAIN && keepRunning) { // Keep polling
 			usleep(320); // One physical MIDI byte (10 bits at 31250 bps)
 			readStatus = snd_rawmidi_read(midiin, inBuffer, buf_size);
 		}
@@ -651,7 +661,7 @@ int main(int argc, char *argv[]) {
 		if (readStatus>0){
 			count = readStatus; // Not pretty
 		}else{
-			errormessage("Problem reading MIDI input: %s", snd_strerror(readStatus));
+			if (keepRunning) errormessage("Problem reading MIDI input: %s", snd_strerror(readStatus));
 			break;
 		}
 		// total_count+=count;
@@ -873,7 +883,7 @@ int main(int argc, char *argv[]) {
 	} // End of main while (1) loop
 
 //	printf("\nTotal:%5u\n", total_count);
-
+    printf("\nBye!\n");
 	snd_rawmidi_close(midiin);
 	midiin  = NULL;    // snd_rawmidi_close() does not clear invalid pointer,
 	return 0;          // so might be a good idea to erase it after closing.
