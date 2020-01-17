@@ -92,9 +92,9 @@ int verbose=0;
 
 enum MapType {NONE, NRPN, RPN, CC, PB};
 const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB"}; // TODO "AT"
-int mapFromDefault[]={0, 0, 0, 0, 8192};
-int mapToMax[]={0, 16383, 16383, 127, 16383};
-int mapToDefault[]={0, 16383, 16383, 127, 16383}; // Default to max
+const int mapFromDefault[]={0, 0, 0, 0, 8192};
+const int mapToMax[]={0, 16383, 16383, 127, 16383};
+const int mapToDefault[]={0, 16383, 16383, 127, 16383}; // Default to max
 
 struct MidiMap {
 	enum MapType type;
@@ -104,6 +104,7 @@ struct MidiMap {
 };
 struct MidiMap ccMaps[map_size]; // CC mapping for each CC
 struct MidiMap atMap; // After-touch mapping
+struct MidiMap pbMap; // Pitch bend mapping
 
 void errormessage(const char *format, ...);
 
@@ -185,7 +186,7 @@ int setMidiMap(struct MidiMap *map, const enum MapType m, const unsigned num, co
 			return(-1);
 	}
 	if(map->type!=NONE){
-		errormessage("Warning: duplicate definition for cc %u", num);
+		errormessage("Warning: duplicate definition");
 	}
 	
 	// Scaling values below are deliberately not checked.
@@ -228,14 +229,29 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, 
 }
 
 int setAtMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
-	if (m==PB){
-		printf("aftertouch to type %u %s values from %d to %d\n",
-			m, mapNames[m], val_from, val_to);
-	}else{
-		printf("aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
-			m, mapNames[m], map_to, map_to, val_from, val_to);
+	if(verbose){
+		if (m==PB){
+			printf("Aftertouch to type %u %s values from %d to %d\n",
+				m, mapNames[m], val_from, val_to);
+		}else{
+			printf("Aftertouch to type %u %s number %u (0x%02x) values from %d to %d\n",
+				m, mapNames[m], map_to, map_to, val_from, val_to);
+		}
 	}
 	return(setMidiMap(&atMap, m, 0, map_to, val_from, val_to));
+}
+
+int setPbMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
+	if(verbose){
+		if (m==PB){
+			printf("Pitch bend to type %u %s values from %d to %d\n",
+				m, mapNames[m], val_from, val_to);
+		}else{
+			printf("Pitch bend to type %u %s number %u (0x%02x) values from %d to %d\n",
+				m, mapNames[m], map_to, map_to, val_from, val_to);
+		}
+	}
+	return(setMidiMap(&pbMap, m, 0, map_to, val_from, val_to));
 }
 
 int init_maps(){
@@ -245,14 +261,14 @@ int init_maps(){
 	setAtMap(NONE, 0, 0, 0);
 }
 
-int dump(const unsigned char *buffer, const int count) {
+void dump(const unsigned char *buffer, const int count) {
 	for(int i=0; i<count; i++){
 		printf("%3u ", buffer[i]);
 	}
 	fflush(stdout);
 }
 
-int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count, unsigned char *status){
+void midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int count, unsigned char *status){
 	int writeStatus;
 	if ((writeStatus = snd_rawmidi_write(midiout, outBuffer, count)) < 0) {
 		errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
@@ -274,7 +290,77 @@ int midiSend(snd_rawmidi_t* midiout, const char *outBuffer, const unsigned int c
 	}
 }
 
-int readIniFile(const char *filename){
+void midiSendParm(snd_rawmidi_t *midiout, unsigned char *outBuffer, unsigned char *runningStatusOut, const unsigned char channel, const struct MidiMap *map, const unsigned int val, const unsigned int max){
+	int parmVal;
+	unsigned char newStatusOut;
+	int k=0;
+	if(verbose>1) printf((map->type == RPN)?"R":"N");
+
+	parmVal=map->valFrom+val*(map->valTo-map->valFrom)/max;
+	// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
+	if (parmVal<0) parmVal=0;
+	if (parmVal>16383) parmVal=16383;
+	newStatusOut=0xB0+channel;
+	if(newStatusOut!=*runningStatusOut){
+		outBuffer[k++]=newStatusOut;
+	}
+	outBuffer[k++]=(map->type == RPN)?0x65:0x63;
+	outBuffer[k++]=(map->num>>7)&0x7F;
+	outBuffer[k++]=(map->type == RPN)?0x64:0x62;
+	outBuffer[k++]=map->num&0x7F;
+	outBuffer[k++]=0x06; // Data entry MSB
+	outBuffer[k++]=(parmVal>>7)&0x7F;
+	outBuffer[k++]=0x26; // Data entry LSB
+	outBuffer[k++]=parmVal&0x7F;
+	// The following prevent accidental change of NRPN value
+	outBuffer[k++]=0x65; // RPN MSB
+	outBuffer[k++]=0x7F;
+	outBuffer[k++]=0x64; // RPN LSB
+	outBuffer[k++]=0x7F;
+	midiSend(midiout, outBuffer, k, runningStatusOut);
+}
+
+void midiSendCc(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char *runningStatusOut, const unsigned char channel, const struct MidiMap *map, const unsigned int val, const unsigned int max){
+	unsigned char ccVal;
+	unsigned char newStatusOut;
+	int k=0;
+	if(verbose>1) printf("C");
+	ccVal=map->valFrom+val*(map->valTo-map->valFrom)/max;
+	if (ccVal<0) ccVal=0;
+	if (ccVal>127) ccVal=127;
+	newStatusOut=0xB0+channel;
+	if(newStatusOut!=*runningStatusOut){
+		outBuffer[k++]=newStatusOut;
+	}
+	outBuffer[k++]=map->num;
+	outBuffer[k++]=ccVal;
+	midiSend(midiout, outBuffer, k, runningStatusOut);
+}
+
+void midiSendPb(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char *runningStatusOut, const unsigned char channel, const struct MidiMap *map, const unsigned int val, const unsigned int max){
+	long pbVal;
+	unsigned char newStatusOut;
+	int k=0;
+	if(verbose>1) printf("P");
+	pbVal=map->valFrom+((long)val*(map->valTo-map->valFrom))/max;
+	if (pbVal<0) pbVal=0;
+	if (pbVal>16383) pbVal=16383;
+	k=0;
+	newStatusOut=0xE0+channel;
+	if(newStatusOut!=*runningStatusOut){
+		outBuffer[k++]=newStatusOut;
+	}
+	outBuffer[k++]=pbVal & 0x7F;
+	outBuffer[k++]=(pbVal >>7) & 0x7F;
+	// At this stage output running status is E0+channel
+	// while input running status is B0 (or D0) +channel
+	// We will echo the input running status after sending the pitch bend
+	// or not depending on what follows in the output stream
+	// This is handled through runningStatusOut/newStatusOut
+	midiSend(midiout, outBuffer, k, runningStatusOut);
+}
+
+void readIniFile(const char *filename){
 	printf("Reading file %s\n", filename);
 	enum MapType currentType;
 	unsigned long n1, n2;
@@ -286,18 +372,20 @@ int readIniFile(const char *filename){
 	size_t len = 0;
 	ssize_t read;
 
+	const char *sectionNames[]={"None\n", "[CcToNrpn]\n", "[CcToRpn]\n", "[CcToCc]\n", "[CcToPb]\n"};
+	int valFrom, valTo;
+	int valFrom0, valTo0;
+	int atSource, pbSource;
+	int err=0;
+
 	fp = fopen(filename, "r");
 	if (fp == NULL){
 		errormessage("Error: cannot open file %s", filename);
 		exit(EXIT_FAILURE);
 	}
 	currentType = NONE;
-	const char *sectionNames[]={"None\n", "[CcToNrpn]\n", "[CcToRpn]\n", "[CcToCc]\n", "[CcToPb]\n"};
 	while ((read = getline(&line, &len, fp)) != -1) {
-		int valFrom, valTo;
-		int valFrom0, valTo0;
-		if (len>0){
-			// printf("Retrieved line of length %zu:\n", read);
+		if (len>0){ // Just skip empty lines
 			start=line;
 			while(*start==' ' || *start=='\t') start++;
 			if (start[0]!='#' && start[0]!=';'){ // Skip comment lines
@@ -312,13 +400,14 @@ int readIniFile(const char *filename){
 					}else printf("Warning: skipping section %s\n", start);
 				}else if (currentType != NONE){
 					// map data: source, destination, [min, max,]
-					// Special source: aftertouch
-					int atSource;
+					// Special sources: aftertouch AT, pitch bend PB
 					if (strncmp(start, "AT", 2)==0) {
 						atSource=1;
 						start+=2;
+					}else if (strncmp(start, "PB", 2)==0) {
+						pbSource=1;
+						start+=2;
 					}else{
-						atSource=0;
 						// Read the cc we are mapping from
 						n1=strtoul(start, &tail, 0);
 						start=tail;
@@ -360,17 +449,19 @@ int readIniFile(const char *filename){
 					if (*start && *start != '#' && *start != ';' && *start != '\n'){
 						errormessage("Error: unexpected data \"%s\"", start);
 						exit(-1);
-					}else{
+					}else{ // Line is properly terminated
 						if(atSource){
-							if (setAtMap(currentType, n2, valFrom, valTo)){
-								errormessage("Error: invalid mapping, aborting");
-								exit(-1);
-							}
+							atSource=0;
+							err=setAtMap(currentType, n2, valFrom, valTo);
+						}else if(pbSource){
+							pbSource=0;
+							err=setPbMap(currentType, n2, valFrom, valTo);
 						}else{
-							if (setCcMap(currentType, n1, n2, valFrom, valTo)){
-								errormessage("Error: invalid mapping, aborting");
-								exit(-1);
-							}
+							err=setCcMap(currentType, n1, n2, valFrom, valTo);
+						}
+						if (err){
+							errormessage("Error: invalid mapping, aborting");
+							exit(-1);
 						}
 					}
 				}
@@ -392,11 +483,12 @@ int main(int argc, char *argv[]) {
 	unsigned char ccNum, channel; // MIDI controller number and value
 	unsigned char atVal; // After-touch value (7 bits)
 	int pbVal; // Pitch bend value; unsigned offset by 8192, not signed, keep sign for clipping only
+	int pbLSB;
 	int parmVal; // RPN or NRPN value, unsigned, keep sign for clipping only
 	int ccVal; // Control change, keep sign for clipping only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
-	enum readStates {PASSTHRU, PROCESS_CC, PROCESS_PARM, PROCESS_VAL, PROCESS_PB, PROCESS_AT} readState;
+	enum readStates {PASSTHRU, GOT_CC, PROCESS_CC_PARM, PROCESS_CC_CC, PROCESS_CC_PB, GOT_AT, GOT_PB, PROCESS_PB} readState;
 	snd_rawmidi_t* midiin = NULL;
 	snd_rawmidi_t* midiout = NULL;
 
@@ -489,11 +581,12 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
-	int count = 0; // Current count of bytes received.
-	// int status_count = 0;         // Current count of status bytes received.
+	int count = 0;
+	// Stats on bytes received.
+	// int status_count = 0;
+	// int data_count = 0;
 	// int total_count = 0;
-	// int data_count; // Number of data bytes following MIDI status byte
-	char inBuffer[buf_size];        // Storage for input buffer
+	char inBuffer[buf_size];
 	unsigned char outBuffer[buf_size]; // cc 99, 98, 6, optionally 38, + reset rpn
 	int k; // Index in outBuffer
 	// printf("\nEAGAIN: %d %s %s", EAGAIN, snd_strerror(-EAGAIN), snd_strerror(EAGAIN));
@@ -549,10 +642,13 @@ int main(int argc, char *argv[]) {
 				// data_count=data_length[(runningStatusIn & 0x70)>>4];
 				switch(runningStatusIn & 0xF0) {
 					case 0xB0:
-						readState = PROCESS_CC;
+						readState = GOT_CC;
 						break;
 					case 0xD0:
-						readState = PROCESS_AT;
+						readState = GOT_AT;
+						break;
+					case 0xE0:
+						readState = GOT_PB;
 						break;
 					default:
 						readState = PASSTHRU;
@@ -562,169 +658,94 @@ int main(int argc, char *argv[]) {
 		        switch (readState){
 				case PASSTHRU:
 					break;
-				case PROCESS_CC: // Got a cc number
+				case GOT_CC: // Got a cc number
 					// Next state depends on map type
 					if(verbose>1) printf("1");
 					ccNum=inBuffer[i];
 					if(ccMaps[ccNum].type == NONE){ // No mapping
-						// catch up with status
-						midiSend(midiout, &runningStatusIn, 1, &runningStatusOut);
-						if(verbose>1) printf("s");
-
-						// Send unchanged cc number
-						midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
-						readState = PROCESS_VAL;
-					}else if(ccMaps[ccNum].type == NRPN || ccMaps[ccNum].type == RPN){
-						readState = PROCESS_PARM;
-						// Do nothing until value is received
-					}else if(ccMaps[ccNum].type == CC){
 						k=0;
 						// Catch up with status
 						outBuffer[k++]=runningStatusIn;
 						if(verbose>1) printf("s");
-						
+						// Send unchanged cc number
+						outBuffer[k++]=ccNum;
+						midiSend(midiout, outBuffer, k, &runningStatusOut);
+						readState = PROCESS_CC_CC;
+					}else if(ccMaps[ccNum].type == NRPN || ccMaps[ccNum].type == RPN){
+						readState = PROCESS_CC_PARM;
+						// Do nothing until value is received
+						// We don't need to resend status since RPN/NRPN use multiple CC
+					}else if(ccMaps[ccNum].type == CC){
+						k=0;
+						// Catch up with status
+						outBuffer[k++]=runningStatusIn;
+						if(verbose>1) printf("s");					
 						// Send remapped cc
 						outBuffer[k++]=ccMaps[ccNum].num & 0x7F;
 						midiSend(midiout, outBuffer, k, &runningStatusOut);
-
 						if(verbose>1) printf("c 0x%02x ", ccMaps[ccNum].num);
-						readState = PROCESS_VAL; // Next byte will be cc value
+						readState = PROCESS_CC_CC; // Next byte will be cc value
 						continue; // Done processing cc number
 					}else if(ccMaps[ccNum].type == PB){
-						readState = PROCESS_PB;
+						readState = PROCESS_CC_PB;
+						// Do nothing until value is received
+						// (we could already send new status if needed)
 					}else{
 						errormessage("Internal error - unknown cc map type %u\n", ccMaps[ccNum].type);
 						exit(-1);
 					}
 					break;
-				case PROCESS_PARM: // RPN/NRPN mapping specific
+				case PROCESS_CC_PARM: // RPN/NRPN mapping specific
 					if(verbose>1) printf("2");
 					ccVal=inBuffer[i];
-					parmVal=ccMaps[ccNum].valFrom+ccVal*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
-					if (parmVal<0) parmVal=0;
-					if (parmVal>16383) parmVal=16383;
-					// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
-					k=0;
-					newStatusOut=0xB0+channel;
-					if(newStatusOut!=runningStatusOut){
-					    outBuffer[k++]=newStatusOut;
-					}
-					outBuffer[k++]=(ccMaps[ccNum].type == RPN)?0x65:0x63;
-					outBuffer[k++]=(ccMaps[ccNum].num>>7)&0x7F; // mapMSB[ccNum];
-					// outBuffer[3]=0xB0+channel; // Unneeded, unchanged running status
-					outBuffer[k++]=(ccMaps[ccNum].type == RPN)?0x64:0x62;
-					outBuffer[k++]=ccMaps[ccNum].num&0x7f; // mapLSB[ccNum];
-					// outBuffer[6]=0xB0+channel; // Unneeded, unchanged running status
-					outBuffer[k++]=0x06; // Data entry MSB
-					outBuffer[k++]=(parmVal>>7)&0x7F;
-					outBuffer[k++]=0x26; // Data entry LSB
-					outBuffer[k++]=parmVal&0x7F;
-					// The following prevent accidental change of NRPN value
-					outBuffer[k++]=0x65; // RPN MSB
-					outBuffer[k++]=0x7F;
-					outBuffer[k++]=0x64; // RPN LSB
-					outBuffer[k++]=0x7F;
-					// Luckily running status is still 0xBcc, no need to resend
-					midiSend(midiout, outBuffer, k, &runningStatusOut);
-					readState = PROCESS_CC;
+					midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
+					readState = GOT_CC;
 					break;
-				case PROCESS_VAL:
+				case PROCESS_CC_CC:
 				    // CC mapping specific, send value
 					// Like passthru except a cc num could follow (running status is 0xB_ )
-					// Hence next state PROCESS_CC
+					// Hence next state GOT_CC
+					// We already sent the status and cc num at the previous GOT_CC state
+					// (thus potentially gaining a few milliseconds)
 					ccVal=ccMaps[ccNum].valFrom+inBuffer[i]*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
 					if (ccVal<0) ccVal=0;
 					if (ccVal>127) ccVal=127;
 					outBuffer[0]=ccVal;
 					midiSend(midiout, outBuffer, 1, &runningStatusOut);
-					readState = PROCESS_CC;
+					readState = GOT_CC; // Ready for more cc (or new status)
 					break;
-				case PROCESS_PB:
+				case PROCESS_CC_PB:
 				    // Pitch bend mapping specific, send scaled value
 				    // Signed pitched change is represented by an unsigned with offset +8192
 				    // i.e. values below 8192 are interpreted as negative by synths
-					if(verbose>1) printf("P");
-					ccVal=inBuffer[i];
-					pbVal=ccMaps[ccNum].valFrom+ccVal*(ccMaps[ccNum].valTo-ccMaps[ccNum].valFrom)/127;
-					if (pbVal<0) pbVal=0;
-					if (pbVal>16383) pbVal=16383;
-					k=0;
-					newStatusOut=0xE0+channel;
-					if(newStatusOut!=runningStatusOut){
-						outBuffer[k++]=newStatusOut;
-						// runningStatusOut=newStatusOut;
-					}
-					outBuffer[k++]=pbVal & 0x7F;
-					outBuffer[k++]=(pbVal >>7) & 0x7F;
-					// At this stage output running status is E0
-					// while input running status is B0 (or D0)
-					// We should echo the input running status after sending the pitch bend
-					// or not depending on what follows in the output stream
-					// This is handled through newStatusOut
-					midiSend(midiout, outBuffer, k, &runningStatusOut);
+				    ccVal=inBuffer[i];
+					midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
 					// We came here by processing a cc, more cc data bytes can follow
-					readState = PROCESS_CC;
+					readState = GOT_CC;
 					break;
-				case PROCESS_AT:
+				case GOT_AT:
+					// AT message is only 2 bytes, we now have the full message
 					if(verbose>1) printf("A");
 					atVal=inBuffer[i];
-					// TODO: Factor out
-					// sendParm(snd_rawmidi_t* midiout, unsigned char &runningStatusOut, unsigned char channel, MapType type, unsigned int parmNum, unsigned int parmVal, int fromVal, int toVal)
-					// sendCc(snd_rawmidi_t* midiout, unsigned char &runningStatusOut, unsigned char channel, unsigned char ccNum, unsigned char ccVal, int fromVal, int toVal)
-					// sendPb(snd_rawmidi_t* midiout, unsigned char &runningStatusOut, unsigned char channel, unsigned int pbVal, int fromVal, int toVal)
-					k=0;
 					switch (atMap.type){
 						case NONE:
 							newStatusOut=runningStatusIn;
+							k=0;
 							if(newStatusOut!=runningStatusOut){
 								outBuffer[k++]=newStatusOut;
 							}
 							outBuffer[k++]=atVal;
+							midiSend(midiout, outBuffer, k, &runningStatusOut);
 							break;
 						case CC:
-							ccVal=atMap.valFrom+atVal*(atMap.valTo-atMap.valFrom)/127;
-							if (ccVal<0) ccVal=0;
-							if (ccVal>127) ccVal=127;
-							newStatusOut=0xB0+channel;
-							if(newStatusOut!=runningStatusOut){
-								outBuffer[k++]=newStatusOut;
-							}
-						    outBuffer[k++]=atMap.num;
-						    outBuffer[k++]=ccVal;
+							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
 							break;
 						case RPN:
 						case NRPN:
-							parmVal=atMap.valFrom+atVal*(atMap.valTo-atMap.valFrom)/127;
-							if (parmVal<0) parmVal=0;
-							if (parmVal>16383) parmVal=16383;
-							newStatusOut=0xB0+channel;
-							if(newStatusOut!=runningStatusOut){
-								outBuffer[k++]=newStatusOut;
-							}
-							outBuffer[k++]=(atMap.type == RPN)?0x65:0x63;
-							outBuffer[k++]=(atMap.num>>7)&0x7F;
-							outBuffer[k++]=(atMap.type == RPN)?0x64:0x62;
-							outBuffer[k++]=atMap.num&0x7F;
-							outBuffer[k++]=0x06; // Data entry MSB
-							outBuffer[k++]=(parmVal>>7)&0x7F;
-							outBuffer[k++]=0x26; // Data entry LSB
-							outBuffer[k++]=parmVal&0x7F;
-							// The following prevent accidental change of NRPN value
-							outBuffer[k++]=0x65; // RPN MSB
-							outBuffer[k++]=0x7F;
-							outBuffer[k++]=0x64; // RPN LSB
-							outBuffer[k++]=0x7F;
+							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
 							break;
 						case PB:
-							pbVal=atMap.valFrom+ccVal*(atMap.valTo-atMap.valFrom)/127; // ?? 128
-							if (pbVal<0) pbVal=0;
-							if (pbVal>16383) pbVal=16383;
-							newStatusOut=0xE0+channel;
-							if(newStatusOut!=runningStatusOut){
-								outBuffer[k++]=newStatusOut;
-							}
-							outBuffer[k++]=pbVal & 0x7F;
-							outBuffer[k++]=pbVal >>7;
+					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
 							break;
 						default:
 							errormessage("Internal error - unknown aftertouch map type %u\n", atMap.type);
@@ -733,13 +754,46 @@ int main(int argc, char *argv[]) {
 					// We'll never need to resend input status:
 					// - if next input message is aftertouch it will map to the same output status
 					// - if not it will already have an explicit status
-					midiSend(midiout, outBuffer, k, &runningStatusOut);
-					readState = PROCESS_AT; // Handle input running status, ready to receive more aftertouch data
+					readState = GOT_AT; // Handle input running status, ready to receive more aftertouch data
+					break;
+				case GOT_PB:
+					if(verbose>1) printf("P");
+					pbLSB=inBuffer[i]&0x7F; // LSB only for now, will receive MSB later
+					readState = PROCESS_PB;
+					break;
+				case PROCESS_PB:
+					pbVal=pbLSB+((inBuffer[i]&0x7F)<<7); // Merge MSB with previusly received LSB
+					printf("[%u %u]", pbVal, pbMap.type);
+					switch (pbMap.type){
+						case NONE:
+							newStatusOut=runningStatusIn;
+							k=0;
+							if(newStatusOut!=runningStatusOut){
+								outBuffer[k++]=newStatusOut;
+							}
+							outBuffer[k++]=pbVal&0x7F;
+							outBuffer[k++]=(pbVal>>7)&0x7F;
+							midiSend(midiout, outBuffer, k, &runningStatusOut);
+							break;
+						case CC:
+							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+							break;
+						case RPN:
+						case NRPN:
+							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+							break;
+						case PB:
+					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+							break;
+						default:
+							errormessage("Internal error - unknown pitch bend map type %u\n", pbMap.type);
+							exit(-1);
+					}
+					readState = GOT_PB; // Keep'm coming
 					break;
 				default:
 					errormessage("Internal error - unexpected read state %u", readState);
 					exit(-1);
-				
 				} // End of switch readState
 			}
 			if (readState == PASSTHRU){
