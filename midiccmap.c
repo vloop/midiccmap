@@ -94,9 +94,14 @@ static volatile int keepRunning = 1;
 
 enum MapType {NONE, NRPN, RPN, CC, PB, AT};
 const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB", "AT"};
-const int mapFromDefault[]={0, 0, 0, 0, 8192, 0};
+const int mapNumMax[]={0, 16383, 16383, 127, 0, 0};
+// Internal representation (pb as unsigned)
+const int mapToMin[]={0, 0, 0, 0, 0, 0};
 const int mapToMax[]={0, 16383, 16383, 127, 16383, 127};
-const int mapToDefault[]={0, 16383, 16383, 127, 16383, 127}; // Default to max
+// External representation (pb as signed, default to midpoint, internally 8192)
+// used for parsing ini file
+const int mapFromDefault[]={0, 0, 0, 0, 0, 0};
+const int mapToDefault[]={0, 16383, 16383, 127, 8191, 127}; // Default to max
 
 struct MidiMap {
 	enum MapType type;
@@ -168,32 +173,33 @@ int usage(const char * command){
 	printf("only 7 bits of the remapped value are significant.\n");
 }
 
-int setMidiMap(struct MidiMap *map, const enum MapType m, const unsigned num, const unsigned map_to, const long val_from, const long val_to){
-	int maxVal;
-	switch (m) {
+int setMidiMap(struct MidiMap *map, const enum MapType destType, const unsigned destNum, const long destValFrom, const long destValTo){
+	long valMin, valMax;
+	switch (destType) {
 		case CC:
 		case RPN:
 		case NRPN:
-			maxVal=mapToMax[m];
-			if(map_to>maxVal){
-				errormessage("Error: invalid destination parameter number %u", map_to);
+			if(destNum>mapNumMax[destType]){
+				errormessage("Error: invalid destination parameter number %u", destNum);
 				return(-1);
 			}
 			break;
 		case PB:
 		case AT:
-			maxVal=mapToMax[m];
-			// map_to is irrelevant for pitch bend and aftertouch, no need to check
-			break;
 		case NONE:
-			maxVal=0;
+			if(destNum!=0){
+				errormessage("Error: invalid destination parameter number %u", destNum);
+				return(-1);
+			}
 			break;
 		default:
-			errormessage("Error: invalid map type %u", m);
+			errormessage("Error: invalid map type %u", destType);
 			return(-1);
 	}
+	
+	// Check for duplicate definition
 	if(map->type!=NONE){
-		errormessage("Warning: new mapping overrides previous one");
+		errormessage("Warning: new mapping overrides previous one.");
 	}
 	
 	// Scaling values below are deliberately not checked.
@@ -203,64 +209,66 @@ int setMidiMap(struct MidiMap *map, const enum MapType m, const unsigned num, co
 	// at the expense of precision.
 	// If scaling results in an out of range output value,
 	// it will be clipped to legal output range.
-	if(((val_from<0)&&(val_to<0))||((val_from>maxVal)&&(val_to>maxVal))){
-		errormessage("Error: unusable output range %d .. %d for control %u\n", val_from, val_to, num);
+	valMin=mapToMin[destType];
+	valMax=mapToMax[destType];
+ printf("dest type %u %s min %u max %u\n", destType, mapNames[destType], valMin, valMax);
+	if(((destValFrom<valMin)&&(destValTo<valMin))||((destValFrom>valMax)&&(destValTo>valMax))){
+		errormessage("Error: unusable output range %d .. %d\n", destValFrom, destValTo);
 		return(-1);
 	}
-	if((val_from<0)||(val_to<0)||(val_from>maxVal)||(val_to>maxVal)){
-		errormessage("Warning: output for control %u will be clipped", num);
+	if((destValFrom<valMin)||(destValTo<valMin)||(destValFrom>valMax)||(destValTo>valMax)){
+		errormessage("Warning: output will be clipped");
 	}
-	map->type=m;
-	map->num=map_to;
-	map->valFrom=val_from;
-	map->valTo=val_to;
+	
+	map->type=destType;
+	map->num=destNum;
+	map->valFrom=destValFrom;
+	map->valTo=destValTo;
 	return(0);
 }
 
 
-int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned map_to, const long val_from, const long val_to){
+int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum, const long destValFrom, const long destValTo){
 	if (ccNum>=map_size){
 		errormessage("Error: invalid source controller number %u", ccNum);
 		return(-1);
 	}
 	if(verbose){
 	    if (m==PB || m==AT){
-			// printf("CC %u (0x%02x) to type %u %s values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
 			printf("CC %u (0x%02x) to %s values from %d to %d\n", ccNum, ccNum, mapNames[m],
-				val_from, val_to);
+				destValFrom, destValTo);
 		}else{
-			// printf("CC %u (0x%02x) to type %u %s number %u (0x%02x) values from %d to %d\n", ccNum, ccNum, m, mapNames[m],
 			printf("CC %u (0x%02x) to %s %u (0x%02x) values from %d to %d\n", ccNum, ccNum, mapNames[m],
-				map_to, map_to, val_from, val_to);
+				destNum, destNum, destValFrom, destValTo);
 		}
 	}
-	return(setMidiMap(&ccMaps[ccNum], m, ccNum, map_to, val_from, val_to));
+	return(setMidiMap(&ccMaps[ccNum], m, destNum, destValFrom, destValTo));
 }
 
-int setAtMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
+int setAtMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
 		if (m==PB || m==AT){
 			printf("Aftertouch to %s values from %d to %d\n",
-				mapNames[m], val_from, val_to);
+				mapNames[m], destValFrom, destValTo);
 		}else{
 			printf("Aftertouch to %s number %u (0x%02x) values from %d to %d\n",
-				mapNames[m], map_to, map_to, val_from, val_to);
+				mapNames[m], destNum, destNum, destValFrom, destValTo);
 		}
 	}
-	return(setMidiMap(&atMap, m, 0, map_to, val_from, val_to));
+	return(setMidiMap(&atMap, m, destNum, destValFrom, destValTo));
 }
 
-int setPbMap(const enum MapType m, const unsigned map_to, const long val_from, const long val_to){
+int setPbMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
 		if (m==PB || m==AT){
 			printf("Pitch bend to %s values from %d to %d\n",
-				mapNames[m], val_from, val_to);
+				mapNames[m], destValFrom, destValTo);
 		}else{
-			printf("Pitch bend to %s number %u (0x%02x) values from %d to %d\n",
-				mapNames[m], map_to, map_to, val_from, val_to);
+			printf("Pitch bend to %s %u (0x%02x) values from %d to %d\n",
+				mapNames[m], destNum, destNum, destValFrom, destValTo);
 		}
 	}
-	return(setMidiMap(&pbMap, m, 0, map_to, val_from, val_to));
+	return(setMidiMap(&pbMap, m, destNum, destValFrom, destValTo));
 }
 
 int init_maps(){
@@ -268,6 +276,7 @@ int init_maps(){
 		setCcMap(NONE, i, 0, 0, 0);
 	}
 	setAtMap(NONE, 0, 0, 0);
+	setPbMap(NONE, 0, 0, 0);
 }
 
 void dump(const unsigned char *buffer, const int count) {
@@ -393,7 +402,7 @@ void midiSendAt(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char 
 
 void readIniFile(const char *filename){
 	printf("Reading file %s\n", filename);
-	enum MapType currentType;
+	enum MapType currentDest;
 	unsigned long n1, n2;
 	char *tail;
 
@@ -404,8 +413,8 @@ void readIniFile(const char *filename){
 	ssize_t read;
 
 	const char *sectionNames[]={"None\n", "[ToNrpn]\n", "[ToRpn]\n", "[ToCc]\n", "[ToPb]\n", "[ToAt]\n"};
-	int valFrom, valTo;
-	int valFrom0, valTo0;
+	long valFrom, valTo;
+	long valFrom0, valTo0;
 	int atSource, pbSource;
 	int err=0;
 
@@ -414,7 +423,7 @@ void readIniFile(const char *filename){
 		errormessage("Error: cannot open file %s", filename);
 		exit(EXIT_FAILURE);
 	}
-	currentType = NONE;
+	currentDest = NONE;
 	while ((read = getline(&line, &len, fp)) != -1) {
 		if (len>0){ // Just skip empty lines (should not happen, always at least \n)
 			start=line;
@@ -422,15 +431,15 @@ void readIniFile(const char *filename){
 			if (start[0]!='#' && start[0]!=';' && start[0]!='\n'){ // Skip comment and blank lines
 				if (start[0]=='['){
 					// section header									
-					currentType = NONE;
+					currentDest = NONE;
 					// todo: case insensitive, ignore trailing blanks (needs custom stricmp)
-					if (strcmp(start, sectionNames[NRPN])==0){ currentType = NRPN;
-					}else if (strcmp(start, sectionNames[RPN])==0){ currentType = RPN;
-					}else if (strcmp(start, sectionNames[CC])==0){ currentType = CC;
-					}else if (strcmp(start, sectionNames[PB])==0){ currentType = PB;
-					}else if (strcmp(start, sectionNames[AT])==0){ currentType = AT;
+					if (strcmp(start, sectionNames[NRPN])==0){ currentDest = NRPN;
+					}else if (strcmp(start, sectionNames[RPN])==0){ currentDest = RPN;
+					}else if (strcmp(start, sectionNames[CC])==0){ currentDest = CC;
+					}else if (strcmp(start, sectionNames[PB])==0){ currentDest = PB;
+					}else if (strcmp(start, sectionNames[AT])==0){ currentDest = AT;
 					}else printf("Warning: skipping section %s\n", start);
-				}else if (currentType != NONE){
+				}else if (currentDest != NONE){
 					// map data: source, destination, [min, max,]
 					// Special sources: aftertouch AT, pitch bend PB
 					if (strncmp(start, "AT", 2)==0) {
@@ -443,11 +452,12 @@ void readIniFile(const char *filename){
 						// Read the cc we are mapping from
 						n1=strtoul(start, &tail, 0);
 						start=tail;
+//			printf("from CC %u > %s\n", n1, start);
 					}
 					
 					// Read the cc/rpn/nrpn we are mapping to,
 					// except for pitch bend and aftertouch
-					if(currentType!=PB && currentType!=AT){
+					if(currentDest!=PB && currentDest!=AT){
 						while(*start==' ' || *start=='\t') start++;
 						if (*start==',') start++; // optional comma separator
 						n2=strtoul(start, &tail, 0);
@@ -456,11 +466,11 @@ void readIniFile(const char *filename){
 						n2=0; // Will not be used anyway
 					}
 					
-					// Read optional (should be signed?) range start and end values
+					// Read optional (signed) range start and end values
 					// Ranges outside output values range result in value clipping
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
-					valFrom=mapFromDefault[currentType];
+					valFrom=mapFromDefault[currentDest];
 					valFrom0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valFrom=valFrom0;
@@ -468,12 +478,18 @@ void readIniFile(const char *filename){
 					}
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
-					valTo=mapToDefault[currentType];
+					valTo=mapToDefault[currentDest];
 					valTo0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valTo=valTo0;
 						start=tail;
 					}
+					// Translate PB external representation to internal
+					if(currentDest==PB){
+						valFrom+=8192;
+						valTo+=8192;
+					}
+//			printf("%d %d %d %d\n", valFrom0, valTo0, valFrom, valTo);
 
 					// Check line termination
 					while(*start==' ' || *start=='\t') start++;
@@ -485,12 +501,12 @@ void readIniFile(const char *filename){
 					}else{ // Line is properly terminated
 						if(atSource){
 							atSource=0;
-							err=setAtMap(currentType, n2, valFrom, valTo);
+							err=setAtMap(currentDest, n2, valFrom, valTo);
 						}else if(pbSource){
 							pbSource=0;
-							err=setPbMap(currentType, n2, valFrom, valTo);
+							err=setPbMap(currentDest, n2, valFrom, valTo);
 						}else{
-							err=setCcMap(currentType, n1, n2, valFrom, valTo);
+							err=setCcMap(currentDest, n1, n2, valFrom, valTo);
 						}
 						if (err){
 							errormessage("Error: invalid mapping, aborting");
