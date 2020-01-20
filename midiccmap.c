@@ -234,7 +234,10 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum,
 		return(-1);
 	}
 	if(verbose){
-	    if (m==PB || m==AT){
+	    if (m==PB){
+			printf("CC %u (0x%02x) to %s values from %ld to %ld (internally %ld to %ld)\n", ccNum, ccNum, mapNames[m],
+				destValFrom-8192, destValTo-8192, destValFrom, destValTo);
+	   }else if (m==AT){
 			printf("CC %u (0x%02x) to %s values from %ld to %ld\n", ccNum, ccNum, mapNames[m],
 				destValFrom, destValTo);
 		}else{
@@ -247,7 +250,10 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum,
 
 int setAtMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
-		if (m==PB || m==AT){
+		if (m==PB){
+			printf("Aftertouch to %s values from %ld to %ld (internally %ld to %ld)\n",
+				mapNames[m], destValFrom-8192, destValTo-8192, destValFrom, destValTo);
+		}else if(m==AT){
 			printf("Aftertouch to %s values from %ld to %ld\n",
 				mapNames[m], destValFrom, destValTo);
 		}else{
@@ -260,7 +266,10 @@ int setAtMap(const enum MapType m, const unsigned destNum, const long destValFro
 
 int setPbMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
-		if (m==PB || m==AT){
+		if (m==PB){
+			printf("Pitch bend to %s values from %ld to %ld (internally %ld to %ld)\n",
+				mapNames[m], destValFrom-8192, destValTo-8192, destValFrom, destValTo);
+		}else if (m==AT){
 			printf("Pitch bend to %s values from %ld to %ld\n",
 				mapNames[m], destValFrom, destValTo);
 		}else{
@@ -537,7 +546,7 @@ int main(int argc, char *argv[]) {
 	int ccVal; // Control change, keep sign for clipping only
 	// int mode = SND_RAWMIDI_SYNC; // don't use, see below
 	int mode = SND_RAWMIDI_NONBLOCK;
-	enum readStates {PASSTHRU, GOT_CC, PROCESS_CC_PARM, PROCESS_CC_CC, PROCESS_CC_PB, PROCESS_CC_AT, GOT_AT, GOT_PB, PROCESS_PB} readState;
+	enum readStates {PASSTHRU, GOT_CC, PROCESS_CC_NONE, PROCESS_CC_PARM, PROCESS_CC_CC, PROCESS_CC_PB, PROCESS_CC_AT, GOT_AT, GOT_PB, PROCESS_PB} readState;
 	snd_rawmidi_t* midiin = NULL;
 	snd_rawmidi_t* midiout = NULL;
 
@@ -654,7 +663,7 @@ int main(int argc, char *argv[]) {
 	// };
 	readState = PASSTHRU;
 	
-	signal(SIGINT, intHandler);
+	signal(SIGINT, intHandler); // Catch Ctl-C
 	
 	while (keepRunning) {
 		/* MIDI read, blocking version - don't use
@@ -717,7 +726,7 @@ int main(int argc, char *argv[]) {
 					if(verbose>1) printf("1");
 					ccNum=inBuffer[i];
 					switch (ccMaps[ccNum].type){
-					case NONE: //if(ccMaps[ccNum].type == NONE){ // No mapping
+					case NONE: // No mapping, pass message unchanged
 						k=0;
 						// Catch up with status
 						outBuffer[k++]=runningStatusIn;
@@ -725,16 +734,16 @@ int main(int argc, char *argv[]) {
 						// Send unchanged cc number
 						outBuffer[k++]=ccNum;
 						midiSend(midiout, outBuffer, k, &runningStatusOut);
-						readState = PROCESS_CC_CC;
+						// Alternatively we could send everything in PROCESS_CC_NONE
+						readState = PROCESS_CC_NONE;
 						break;
 					case NRPN:
 					case RPN:
-					// }else if(ccMaps[ccNum].type == NRPN || ccMaps[ccNum].type == RPN){
 						readState = PROCESS_CC_PARM;
 						// Do nothing until value is received
 						// We don't need to resend status since RPN/NRPN use multiple CC
 						break;
-					case CC: // }else if(ccMaps[ccNum].type == CC){
+					case CC:
 						k=0;
 						// Catch up with status
 						outBuffer[k++]=runningStatusIn;
@@ -744,8 +753,8 @@ int main(int argc, char *argv[]) {
 						midiSend(midiout, outBuffer, k, &runningStatusOut);
 						if(verbose>1) printf("c 0x%02x ", ccMaps[ccNum].num);
 						readState = PROCESS_CC_CC; // Next byte will be cc value
-						break; // continue; // Done processing cc number
-					case PB: // }else if(ccMaps[ccNum].type == PB){
+						break;
+					case PB:
 						readState = PROCESS_CC_PB;
 						// Do nothing until value is received
 						// (we could already send new status if needed)
@@ -765,6 +774,10 @@ int main(int argc, char *argv[]) {
 					ccVal=inBuffer[i];
 					midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
 					readState = GOT_CC;
+					break;
+				case PROCESS_CC_NONE:
+					midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
+					readState = GOT_CC; // Ready for more cc (or new status)
 					break;
 				case PROCESS_CC_CC:
 				    // CC mapping specific, send value
