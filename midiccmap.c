@@ -97,7 +97,7 @@ const char *mapNames[]={"NONE", "NRPN", "RPN", "CC", "PB", "AT"};
 const int mapNumMax[]={0, 16383, 16383, 127, 0, 0};
 // Internal representation (pb as unsigned)
 const int mapToMin[]={0, 0, 0, 0, 0, 0};
-const int mapToMax[]={0, 16383, 16383, 127, 16383, 127};
+const int mapToMax[]={16383, 16383, 16383, 127, 16383, 127};
 // External representation (pb as signed, default to midpoint, internally 8192)
 // used for parsing ini file
 const int mapFromDefault[]={0, 0, 0, 0, 0, 0};
@@ -211,7 +211,7 @@ int setMidiMap(struct MidiMap *map, const enum MapType destType, const unsigned 
 	// it will be clipped to legal output range.
 	valMin=mapToMin[destType];
 	valMax=mapToMax[destType];
- printf("dest type %u %s min %u max %u\n", destType, mapNames[destType], valMin, valMax);
+    if (verbose>2) printf("dest type %u %s min %lu max %lu from %lu to %lu\n", destType, mapNames[destType], valMin, valMax, destValFrom, destValTo);
 	if(((destValFrom<valMin)&&(destValTo<valMin))||((destValFrom>valMax)&&(destValTo>valMax))){
 		errormessage("Error: unusable output range %d .. %d\n", destValFrom, destValTo);
 		return(-1);
@@ -235,10 +235,10 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum,
 	}
 	if(verbose){
 	    if (m==PB || m==AT){
-			printf("CC %u (0x%02x) to %s values from %d to %d\n", ccNum, ccNum, mapNames[m],
+			printf("CC %u (0x%02x) to %s values from %ld to %ld\n", ccNum, ccNum, mapNames[m],
 				destValFrom, destValTo);
 		}else{
-			printf("CC %u (0x%02x) to %s %u (0x%02x) values from %d to %d\n", ccNum, ccNum, mapNames[m],
+			printf("CC %u (0x%02x) to %s %u (0x%02x) values from %ld to %ld\n", ccNum, ccNum, mapNames[m],
 				destNum, destNum, destValFrom, destValTo);
 		}
 	}
@@ -248,10 +248,10 @@ int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum,
 int setAtMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
 		if (m==PB || m==AT){
-			printf("Aftertouch to %s values from %d to %d\n",
+			printf("Aftertouch to %s values from %ld to %ld\n",
 				mapNames[m], destValFrom, destValTo);
 		}else{
-			printf("Aftertouch to %s number %u (0x%02x) values from %d to %d\n",
+			printf("Aftertouch to %s number %u (0x%02x) values from %ld to %ld\n",
 				mapNames[m], destNum, destNum, destValFrom, destValTo);
 		}
 	}
@@ -261,10 +261,10 @@ int setAtMap(const enum MapType m, const unsigned destNum, const long destValFro
 int setPbMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
 	if(verbose){
 		if (m==PB || m==AT){
-			printf("Pitch bend to %s values from %d to %d\n",
+			printf("Pitch bend to %s values from %ld to %ld\n",
 				mapNames[m], destValFrom, destValTo);
 		}else{
-			printf("Pitch bend to %s %u (0x%02x) values from %d to %d\n",
+			printf("Pitch bend to %s %u (0x%02x) values from %ld to %ld\n",
 				mapNames[m], destNum, destNum, destValFrom, destValTo);
 		}
 	}
@@ -273,10 +273,10 @@ int setPbMap(const enum MapType m, const unsigned destNum, const long destValFro
 
 int init_maps(){
 	for(int i=0; i<map_size; i++){
-		setCcMap(NONE, i, 0, 0, 0);
+		setCcMap(NONE, i, 0, mapToMin[CC], mapToMax[CC]);
 	}
-	setAtMap(NONE, 0, 0, 0);
-	setPbMap(NONE, 0, 0, 0);
+	setAtMap(NONE, 0, mapToMin[AT], mapToMax[AT]);
+	setPbMap(NONE, 0, mapToMin[PB], mapToMax[PB]);
 }
 
 void dump(const unsigned char *buffer, const int count) {
@@ -415,7 +415,7 @@ void readIniFile(const char *filename){
 	const char *sectionNames[]={"None\n", "[ToNrpn]\n", "[ToRpn]\n", "[ToCc]\n", "[ToPb]\n", "[ToAt]\n"};
 	long valFrom, valTo;
 	long valFrom0, valTo0;
-	int atSource, pbSource;
+	int atSource=0, pbSource=0;
 	int err=0;
 
 	fp = fopen(filename, "r");
