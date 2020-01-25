@@ -1,4 +1,4 @@
-// A program to map midi control changes to RPN or NRPN
+// A program to map midi control changes to RPN or NRPN and more
 // owes much to alsarawmidiin.c
 
 // Coding Marc Périlleux 2019
@@ -86,6 +86,7 @@
 #define buf_size (1024)
 
 int verbose=0;
+int hexdump=0; // 0 -> decimal, 1 -> hex
 static volatile int keepRunning = 1;
 
 // We need to map 128 possible MIDI controller numbers
@@ -127,7 +128,6 @@ and will send:
 - cc 9 to nrpn 10 and cc 11 to nrpn 12
 - all other midi messages unchanged
 */
-// TODO handle ctl-C
 // TODO look for default config file ~/midiccmap.ini
 // before handling options, because explicit -f will
 // merge and replace map
@@ -157,8 +157,9 @@ void intHandler(int dummy) {
 int usage(const char * command){
 	printf("Use: %s [-option]... [cc value]...\n", command);
 	printf("Options:\n");
-	printf("-v\t\tverbose (can be specified multiple times)\n");
 	printf("-h\t\tdisplay this help message\n");
+	printf("-v\t\tverbose (can be specified multiple times)\n");
+	printf("-x\t\thex dump (implies -v -v)\n");
 	printf("-n\t\ttreat the following as cc/nrpn pairs\n");
 	printf("-r\t\ttreat the following as cc/rpn pairs\n");
 	printf("-c\t\ttreat the following as cc/cc pairs\n");
@@ -168,9 +169,9 @@ int usage(const char * command){
 	printf("\t0 to 127 for cc to cc mapping\n");
 	printf("\t0 to 16383 for cc to rpn/nrpn mapping\n");
 	printf("cc and values are in decimal or in hex with 0x prefix\n");
-	printf("please note that cc and at values are only 7 bits, therefore\n");
-	printf("even though rpn/nrpn/pitch bend are 14 bit values\n");
-	printf("only 7 bits of the remapped value are significant.\n");
+	printf("Please note that cc and at values are only 7 bits.\n");
+	printf("rpn/nrpn/pitch bend are 14 bit values, and will be scaled accordingly,\n");
+	printf("but the output will only have 128 distinct values.\n");
 }
 
 int setMidiMap(struct MidiMap *map, const enum MapType destType, const unsigned destNum, const long destValFrom, const long destValTo){
@@ -220,6 +221,21 @@ int setMidiMap(struct MidiMap *map, const enum MapType destType, const unsigned 
 		errormessage("Warning: output will be clipped");
 	}
 	
+	if(verbose){
+		switch (destType){
+	    case PB:   
+			printf(" to %s values from %ld to %ld (internally %ld to %ld)\n", mapNames[destType],
+				destValFrom-8192, destValTo-8192, destValFrom, destValTo);
+			break;
+	    case AT:
+			printf(" to %s values from %ld to %ld\n", mapNames[destType], destValFrom, destValTo);
+			break;
+		default:
+			printf(" to %s %u (0x%02x) values from %ld to %ld\n", mapNames[destType],
+				destNum, destNum, destValFrom, destValTo);
+		}
+	}
+	
 	map->type=destType;
 	map->num=destNum;
 	map->valFrom=destValFrom;
@@ -227,56 +243,22 @@ int setMidiMap(struct MidiMap *map, const enum MapType destType, const unsigned 
 	return(0);
 }
 
-
 int setCcMap(const enum MapType m, const unsigned ccNum, const unsigned destNum, const long destValFrom, const long destValTo){
 	if (ccNum>=map_size){
 		errormessage("Error: invalid source controller number %u", ccNum);
 		return(-1);
 	}
-	if(verbose){
-	    if (m==PB){
-			printf("CC %u (0x%02x) to %s values from %ld to %ld (internally %ld to %ld)\n", ccNum, ccNum, mapNames[m],
-				destValFrom-8192, destValTo-8192, destValFrom, destValTo);
-	   }else if (m==AT){
-			printf("CC %u (0x%02x) to %s values from %ld to %ld\n", ccNum, ccNum, mapNames[m],
-				destValFrom, destValTo);
-		}else{
-			printf("CC %u (0x%02x) to %s %u (0x%02x) values from %ld to %ld\n", ccNum, ccNum, mapNames[m],
-				destNum, destNum, destValFrom, destValTo);
-		}
-	}
+	if(verbose) printf("CC %u (0x%02x)", ccNum, ccNum);
 	return(setMidiMap(&ccMaps[ccNum], m, destNum, destValFrom, destValTo));
 }
 
 int setAtMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
-	if(verbose){
-		if (m==PB){
-			printf("Aftertouch to %s values from %ld to %ld (internally %ld to %ld)\n",
-				mapNames[m], destValFrom-8192, destValTo-8192, destValFrom, destValTo);
-		}else if(m==AT){
-			printf("Aftertouch to %s values from %ld to %ld\n",
-				mapNames[m], destValFrom, destValTo);
-		}else{
-			printf("Aftertouch to %s number %u (0x%02x) values from %ld to %ld\n",
-				mapNames[m], destNum, destNum, destValFrom, destValTo);
-		}
-	}
+	if(verbose) printf("Aftertouch");
 	return(setMidiMap(&atMap, m, destNum, destValFrom, destValTo));
 }
 
 int setPbMap(const enum MapType m, const unsigned destNum, const long destValFrom, const long destValTo){
-	if(verbose){
-		if (m==PB){
-			printf("Pitch bend to %s values from %ld to %ld (internally %ld to %ld)\n",
-				mapNames[m], destValFrom-8192, destValTo-8192, destValFrom, destValTo);
-		}else if (m==AT){
-			printf("Pitch bend to %s values from %ld to %ld\n",
-				mapNames[m], destValFrom, destValTo);
-		}else{
-			printf("Pitch bend to %s %u (0x%02x) values from %ld to %ld\n",
-				mapNames[m], destNum, destNum, destValFrom, destValTo);
-		}
-	}
+	if(verbose) printf("Pitch bend");
 	return(setMidiMap(&pbMap, m, destNum, destValFrom, destValTo));
 }
 
@@ -289,8 +271,10 @@ int init_maps(){
 }
 
 void dump(const unsigned char *buffer, const int count) {
+	char *fmt;
+	fmt=(hexdump)?"%02x ":"%3u ";
 	for(int i=0; i<count; i++){
-		printf("%3u ", buffer[i]);
+		printf(fmt, buffer[i]);
 	}
 	fflush(stdout);
 }
@@ -322,7 +306,6 @@ void midiSendParm(snd_rawmidi_t *midiout, unsigned char *outBuffer, unsigned cha
 	unsigned char newStatusOut;
 	int k=0;
 	if(verbose>1) printf((map->type == RPN)?"R":"N");
-
 	parmVal=map->valFrom+val*(map->valTo-map->valFrom)/max;
 	// see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
 	if (parmVal<0) parmVal=0;
@@ -380,7 +363,7 @@ void midiSendPb(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char 
 	outBuffer[k++]=pbVal & 0x7F;
 	outBuffer[k++]=(pbVal >>7) & 0x7F;
 	// At this stage output running status is E0+channel
-	// while input running status is B0 (or D0) +channel
+	// while input running status could be B0 (or D0) +channel
 	// We will echo the input running status after sending the pitch bend
 	// or not depending on what follows in the output stream
 	// This is handled through runningStatusOut/newStatusOut
@@ -402,7 +385,7 @@ void midiSendAt(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char 
 	}
 	outBuffer[k++]=atVal & 0x7F;
 	// At this stage output running status is D0+channel
-	// while input running status is B0 (or D0) +channel
+	// while input running status could be B0 (or D0) +channel
 	// We will echo the input running status after sending the aftertouch
 	// or not depending on what follows in the output stream
 	// This is handled through runningStatusOut/newStatusOut
@@ -410,23 +393,18 @@ void midiSendAt(snd_rawmidi_t* midiout, unsigned char *outBuffer, unsigned char 
 }
 
 void readIniFile(const char *filename){
-	printf("Reading file %s\n", filename);
-	enum MapType currentDest;
-	unsigned long n1, n2;
-	char *tail;
-
 	FILE *fp;
-	char *line = NULL;
-	char *start;
 	size_t len = 0;
 	ssize_t read;
-
+	enum MapType currentDest = NONE, currentSrc = NONE;
+	unsigned long ccFrom, parmTo;
+	char *start, *tail, *line = NULL;
 	const char *sectionNames[]={"None\n", "[ToNrpn]\n", "[ToRpn]\n", "[ToCc]\n", "[ToPb]\n", "[ToAt]\n"};
 	long valFrom, valTo;
 	long valFrom0, valTo0;
-	int atSource=0, pbSource=0;
 	int err=0;
 
+	printf("Reading file %s\n", filename);
 	fp = fopen(filename, "r");
 	if (fp == NULL){
 		errormessage("Error: cannot open file %s", filename);
@@ -451,17 +429,18 @@ void readIniFile(const char *filename){
 				}else if (currentDest != NONE){
 					// map data: source, destination, [min, max,]
 					// Special sources: aftertouch AT, pitch bend PB
+					while(*start==' ' || *start=='\t') start++;
 					if (strncmp(start, "AT", 2)==0) {
-						atSource=1;
+						currentSrc = AT;
 						start+=2;
 					}else if (strncmp(start, "PB", 2)==0) {
-						pbSource=1;
+						currentSrc = PB;
 						start+=2;
 					}else{
+						currentSrc = CC;
 						// Read the cc we are mapping from
-						n1=strtoul(start, &tail, 0);
+						ccFrom=strtoul(start, &tail, 0);
 						start=tail;
-//			printf("from CC %u > %s\n", n1, start);
 					}
 					
 					// Read the cc/rpn/nrpn we are mapping to,
@@ -469,36 +448,38 @@ void readIniFile(const char *filename){
 					if(currentDest!=PB && currentDest!=AT){
 						while(*start==' ' || *start=='\t') start++;
 						if (*start==',') start++; // optional comma separator
-						n2=strtoul(start, &tail, 0);
+						parmTo=strtoul(start, &tail, 0);
 						start=tail;
 					}else{
-						n2=0; // Will not be used anyway
+						parmTo=0; // Will not be used anyway
 					}
 					
 					// Read optional (signed) range start and end values
 					// Ranges outside output values range result in value clipping
+					// todo readSigned(char **start, char **tail, long default)
+					valFrom=mapFromDefault[currentDest];
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
-					valFrom=mapFromDefault[currentDest];
 					valFrom0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valFrom=valFrom0;
 						start=tail;
 					}
+
+					valTo=mapToDefault[currentDest];
 					while(*start==' ' || *start=='\t') start++;
 					if (*start==',') start++; // accept trailing comma
-					valTo=mapToDefault[currentDest];
 					valTo0=strtol(start, &tail, 0);
 					if (tail!=start){
 						valTo=valTo0;
 						start=tail;
 					}
+
 					// Translate PB external representation to internal
 					if(currentDest==PB){
 						valFrom+=8192;
 						valTo+=8192;
 					}
-//			printf("%d %d %d %d\n", valFrom0, valTo0, valFrom, valTo);
 
 					// Check line termination
 					while(*start==' ' || *start=='\t') start++;
@@ -507,15 +488,20 @@ void readIniFile(const char *filename){
 					if (*start && *start != '#' && *start != ';' && *start != '\n'){
 						errormessage("Error: unexpected data \"%s\"", start);
 						exit(-1);
-					}else{ // Line is properly terminated
-						if(atSource){
-							atSource=0;
-							err=setAtMap(currentDest, n2, valFrom, valTo);
-						}else if(pbSource){
-							pbSource=0;
-							err=setPbMap(currentDest, n2, valFrom, valTo);
-						}else{
-							err=setCcMap(currentDest, n1, n2, valFrom, valTo);
+					}else{ // Line is properly terminated, set map accordingly
+						switch (currentSrc){
+						case AT:
+							err=setAtMap(currentDest, parmTo, valFrom, valTo);
+							break;
+						case PB:
+							err=setPbMap(currentDest, parmTo, valFrom, valTo);
+							break;
+						case CC:
+							err=setCcMap(currentDest, ccFrom, parmTo, valFrom, valTo);
+							break;
+						default:
+							errormessage("Internal error: unexpected source %u\n", currentSrc);
+							exit(-1);
 						}
 						if (err){
 							errormessage("Error: invalid mapping, aborting");
@@ -570,9 +556,13 @@ int main(int argc, char *argv[]) {
 				case 'v':
 					verbose++;
 					break;
+				case 'x':
+					hexdump=1;
+					if(verbose<2) verbose=2;
+					break;
 				case 'h':
 					usage(argv[0]);
-					exit(0); // break;
+					exit(0);
 				// 'n' 'r' 'c' 'p' 'a' set the mapping type
 				case 'n':
 					currentType=NRPN;
@@ -619,7 +609,7 @@ int main(int argc, char *argv[]) {
 				}
 				need_map=0;
 			}else{
-				// TODO allow aftertouch source also on command line ?
+				// TODO allow at/pb source also on command line ?
 				n1=strtoul(argv[i], &tail, 0);
 				if (*tail){
 					errormessage("Error: invalid source controller number%s", argv[i]);
@@ -636,11 +626,12 @@ int main(int argc, char *argv[]) {
 	}
 	fflush(stdout);
 	
-
 	if ((openStatus = snd_rawmidi_open(&midiin, &midiout, "virtual", mode)) < 0) {
 		errormessage("Problem opening MIDI input: %s", snd_strerror(openStatus));
 		exit(1);
 	}
+	// Hoped to retrieve the actual name, like "Client-133" but this just returns "virtual"
+	// printf ("Opened MIDI in: %s, out: %s \n", snd_rawmidi_name(midiin), snd_rawmidi_name(midiout));
 
 	int count = 0;
 	// Stats on bytes received.
@@ -665,6 +656,7 @@ int main(int argc, char *argv[]) {
 	
 	signal(SIGINT, intHandler); // Catch Ctl-C
 	
+	if (verbose) printf("Waiting for MIDI messages...\n");
 	while (keepRunning) {
 		/* MIDI read, blocking version - don't use
 		// blocking mode on "virtual" drops bytes ???
@@ -772,7 +764,7 @@ int main(int argc, char *argv[]) {
 				case PROCESS_CC_PARM: // RPN/NRPN mapping specific
 					if(verbose>1) printf("2");
 					ccVal=inBuffer[i];
-					midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
+					midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, mapToMax[CC]);
 					readState = GOT_CC;
 					break;
 				case PROCESS_CC_NONE:
@@ -797,13 +789,13 @@ int main(int argc, char *argv[]) {
 				    // Signed pitched change is represented by an unsigned with offset +8192
 				    // i.e. values below 8192 are interpreted as negative by synths
 				    ccVal=inBuffer[i];
-					midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
+					midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, mapToMax[CC]);
 					// We came here by processing a cc, more cc data bytes can follow
 					readState = GOT_CC;
 					break;
 				case PROCESS_CC_AT:
 				    ccVal=inBuffer[i];
-					midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, 127);
+					midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &ccMaps[ccNum], ccVal, mapToMax[CC]);
 					// We came here by processing a cc, more cc data bytes can follow
 					readState = GOT_CC;
 					break;
@@ -822,17 +814,17 @@ int main(int argc, char *argv[]) {
 							midiSend(midiout, outBuffer, k, &runningStatusOut);
 							break;
 						case CC:
-							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
+							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, mapToMax[AT]);
 							break;
 						case RPN:
 						case NRPN:
-							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
+							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, mapToMax[AT]);
 							break;
 						case PB:
-					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
+					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, mapToMax[AT]);
 							break;
 						case AT:
-					        midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, 127);
+					        midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &atMap, atVal, mapToMax[AT]);
 							break;
 						default:
 							errormessage("Internal error - unknown aftertouch map type %u\n", atMap.type);
@@ -863,17 +855,17 @@ int main(int argc, char *argv[]) {
 							midiSend(midiout, outBuffer, k, &runningStatusOut);
 							break;
 						case CC:
-							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+							midiSendCc(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, mapToMax[PB]);
 							break;
 						case RPN:
 						case NRPN:
-							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+							midiSendParm(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, mapToMax[PB]);
 							break;
 						case PB:
-					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+					        midiSendPb(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, mapToMax[PB]);
 							break;
 						case AT:
-					        midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, 16383);
+					        midiSendAt(midiout, outBuffer, &runningStatusOut, channel, &pbMap, pbVal, mapToMax[PB]);
 							break;
 						default:
 							errormessage("Internal error - unknown pitch bend map type %u\n", pbMap.type);
@@ -888,14 +880,7 @@ int main(int argc, char *argv[]) {
 			}
 			if (readState == PASSTHRU){
 				midiSend(midiout, &inBuffer[i], 1, &runningStatusOut);
-				/*
-				if ((writeStatus = snd_rawmidi_write(midiout, &inBuffer[i], 1)) < 0) {
-			        errormessage("Problem writing MIDI Output: %s", snd_strerror(writeStatus));
-					exit(-1);
-		        }
-		        */
 		        if(inBuffer[i]&0x80){
-					// runningStatusOut=inBuffer[i];
 					if(verbose){
 						printf("s");
 						fflush(stdout);
@@ -932,5 +917,3 @@ void errormessage(const char *format, ...) {
    va_end(ap);
    putc('\n', stderr);
 }
-
-
