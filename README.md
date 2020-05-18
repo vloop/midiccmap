@@ -1,51 +1,49 @@
 ## Summary
-midiccmap allows to map midi continuous controllers, pitch bend and aftertouch to
-- cc
-- nrpn (non registered parameter number)
-- rpn (registered parameter number)
-- pitch bend
-- aftertouch
 
-cc and aftertouch are 7-bit values, while nrpn, rpn and pb are 14-bit.
+Apply pitch bend depending on last note.
 
-This means a scaling has to be applied.
-
-The output can only have 128 distinct values when the source is 7-bit.
-
-When the source is 7-bit and the destination 14-bit,
-
-the output resolution and/or range have to be reduced.
-
-Default scaling maps to full output range.
+This allows microtuning on mono synths that do not provide it.
+This works properly only in mono mode: because pitch bend is a channel message, if a chord is played the same pitch bend will be applied to all notes.
 
 ## Installation
 
 No installer provided at the moment
 
-The only prerequisite is alsa
+The only prerequisites are alsa and fltk
 
-The following commands were tested under debian 9
+The following commands were tested under Linux Mint 19.1
 
 - Installing ALSA development files:
 ```
 sudo apt install libasound2-dev
 ```
+- Installing FLTK and its development files:
+```
+sudo apt install libfltk1.3-dev
+```
 - Compiling:
 ```
-gcc -o midiccmap midiccmap.c -lasound
+gcc autobend.c -o autobend -lfltk -lasound -lpthread -lstdc++
 ```
 - Installing:
 ```
-sudo cp midiccmap /usr/local/bin/
+sudo cp autobend /usr/local/bin/
+sudo cp po/fr/autobend.mo /usr/share/locale/fr/LC_MESSAGES/
 ```
 ## Usage
 ```
-midiccmap -h
+autobend [file]
 ```
-will display available options.
+Using the sliders with the mouse gives only coarse control, accuracy requires using the keyboard shortcuts
+up arrow or numeric keypad +, down arrow or numeric keypad -, page up and down or using the mouse scroll wheel.
+Delete or ., home and end will set the value to 0, -8192 and +8191 respectively.
 
-Mapping can be set on command line or in .ini file,
+Autobend has no way of knowing the bender range on your synth,
+the pitch bend midi message range is fixed from -8192 to 8191
+but the corresponding musical interval may vary, therefore tuning has to be done by ear.
 
-Scaling can only be set in .ini file.
+Files default to .conf file type. This is a plain text file, whith a very simple syntax:
+each line is of the form "note space offset", for example E -2048.
 
-See midiccmap.ini for commented examples.
+### Thanks
+Thanks to jmechmech for the original idea and testing
