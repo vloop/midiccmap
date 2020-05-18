@@ -49,3 +49,6 @@ Mapping can be set on command line or in .ini file,
 Scaling can only be set in .ini file.
 
 See midiccmap.ini for commented examples.
+
+## Thanks
+Thanks to jmechmech for the original idea and testing
